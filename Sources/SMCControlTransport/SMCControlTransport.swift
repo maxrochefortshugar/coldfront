@@ -27,6 +27,9 @@ private struct SMCKeyDataKeyInfo {
     var dataSize: UInt32 = 0
     var dataType: UInt32 = 0
     var dataAttributes: UInt8 = 0
+    var padding0: UInt8 = 0
+    var padding1: UInt8 = 0
+    var padding2: UInt8 = 0
 }
 
 private struct SMCKeyData {
@@ -94,6 +97,27 @@ private struct SMCBytes {
     }
 }
 
+package enum SMCControlTransportABI {
+    package static let keyDataSize = MemoryLayout<SMCKeyData>.size
+    package static let keyInfoSize = MemoryLayout<SMCKeyDataKeyInfo>.size
+
+    package static let offsets = (
+        key: MemoryLayout<SMCKeyData>.offset(of: \.key)!,
+        version: MemoryLayout<SMCKeyData>.offset(of: \.version)!,
+        pLimitData: MemoryLayout<SMCKeyData>.offset(of: \.pLimitData)!,
+        keyInfo: MemoryLayout<SMCKeyData>.offset(of: \.keyInfo)!,
+        result: MemoryLayout<SMCKeyData>.offset(of: \.result)!,
+        status: MemoryLayout<SMCKeyData>.offset(of: \.status)!,
+        data8: MemoryLayout<SMCKeyData>.offset(of: \.data8)!,
+        data32: MemoryLayout<SMCKeyData>.offset(of: \.data32)!,
+        bytes: MemoryLayout<SMCKeyData>.offset(of: \.bytes)!
+    )
+
+    package static func acceptsOutputSize(_ outputSize: Int) -> Bool {
+        outputSize >= keyDataSize
+    }
+}
+
 private struct SMCKeyInfo {
     let dataSize: UInt32
     let dataType: UInt32
@@ -127,7 +151,7 @@ package final class SMCFanHardware: FanHardware {
         input.keyInfo.dataSize = keyInfo.dataSize
         input.data8 = smcCommandReadBytes
 
-        let callResult = rawCall(input)
+        let callResult = try rawCall(input)
         guard callResult.kernReturn == KERN_SUCCESS else {
             throw FanControlError.invalidReading(key: key.stringValue, reason: "SMC read failed: kernReturn \(callResult.kernReturn)")
         }
@@ -180,7 +204,7 @@ package final class SMCFanHardware: FanHardware {
         input.data8 = smcCommandWriteBytes
         input.bytes = SMCBytes(bytes)
 
-        let callResult = rawCall(input)
+        let callResult = try rawCall(input)
         return FanWriteResult(
             kernReturn: Int32(callResult.kernReturn),
             smcResult: callResult.output.result,
@@ -193,7 +217,7 @@ package final class SMCFanHardware: FanHardware {
         input.key = key.rawValue
         input.data8 = smcCommandReadKeyInfo
 
-        let callResult = rawCall(input)
+        let callResult = try rawCall(input)
         guard callResult.kernReturn == KERN_SUCCESS else {
             throw FanControlError.invalidReading(key: key.stringValue, reason: "SMC key info failed: kernReturn \(callResult.kernReturn)")
         }
@@ -208,7 +232,9 @@ package final class SMCFanHardware: FanHardware {
         )
     }
 
-    private func rawCall(_ input: SMCKeyData) -> (kernReturn: kern_return_t, output: SMCKeyData) {
+    private func rawCall(_ input: SMCKeyData) throws -> (kernReturn: kern_return_t, output: SMCKeyData) {
+        try Self.assertValidABI()
+
         var input = input
         var output = SMCKeyData()
         var outputSize = MemoryLayout<SMCKeyData>.size
@@ -224,7 +250,26 @@ package final class SMCFanHardware: FanHardware {
                 )
             }
         }
+        guard SMCControlTransportABI.acceptsOutputSize(outputSize) else {
+            throw SMCControlTransportError(description: "short SMC output: \(outputSize) bytes, expected at least \(SMCControlTransportABI.keyDataSize)")
+        }
         return (kernReturn, output)
+    }
+
+    private static func assertValidABI() throws {
+        guard SMCControlTransportABI.keyDataSize == 80,
+              SMCControlTransportABI.keyInfoSize == 12,
+              SMCControlTransportABI.offsets.key == 0,
+              SMCControlTransportABI.offsets.version == 4,
+              SMCControlTransportABI.offsets.pLimitData == 12,
+              SMCControlTransportABI.offsets.keyInfo == 28,
+              SMCControlTransportABI.offsets.result == 40,
+              SMCControlTransportABI.offsets.status == 41,
+              SMCControlTransportABI.offsets.data8 == 42,
+              SMCControlTransportABI.offsets.data32 == 44,
+              SMCControlTransportABI.offsets.bytes == 48 else {
+            throw SMCControlTransportError(description: "invalid SMCKeyData ABI layout")
+        }
     }
 
     private func validateFanIndex(_ fan: Int, capability: FanCapability) throws {

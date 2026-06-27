@@ -1,5 +1,6 @@
 import FanControlCore
 import Foundation
+import SMCControlTransport
 
 func testCoreBoundary() throws {
     let key = try FanKey("F0Tg")
@@ -50,6 +51,24 @@ func testSMCControlTransportWritesOnlyTypedOperationsFromCapability() throws {
     try expect(source.contains("case .target(let fan, let bytes):"), "SMCFanHardware write should handle target operations")
     try expect(source.contains("try capability.targetKey(for: fan)"), "target writes should derive target key from FanCapability")
     try expect(!source.contains("FanKey(\"F"), "SMCFanHardware write path should not derive write keys from raw caller strings")
+}
+
+func testSMCControlTransportKeyDataABILayout() throws {
+    let abi = SMCControlTransportABI.self
+
+    try expect(abi.keyDataSize == 80, "SMCKeyData size should match C layout")
+    try expect(abi.keyInfoSize == 12, "SMCKeyDataKeyInfo size should include C tail padding")
+    try expect(abi.offsets.key == 0, "SMCKeyData.key offset should match C layout")
+    try expect(abi.offsets.version == 4, "SMCKeyData.version offset should match C layout")
+    try expect(abi.offsets.pLimitData == 12, "SMCKeyData.pLimitData offset should match C layout")
+    try expect(abi.offsets.keyInfo == 28, "SMCKeyData.keyInfo offset should match C layout")
+    try expect(abi.offsets.result == 40, "SMCKeyData.result offset should match C layout")
+    try expect(abi.offsets.status == 41, "SMCKeyData.status offset should match C layout")
+    try expect(abi.offsets.data8 == 42, "SMCKeyData.data8 offset should match C layout")
+    try expect(abi.offsets.data32 == 44, "SMCKeyData.data32 offset should match C layout")
+    try expect(abi.offsets.bytes == 48, "SMCKeyData.bytes offset should match C layout")
+    try expect(!abi.acceptsOutputSize(79), "SMC raw call should reject short output")
+    try expect(abi.acceptsOutputSize(80), "SMC raw call should accept full key data output")
 }
 
 func smcControlTransportSource() throws -> String {
@@ -1904,6 +1923,7 @@ let tests: [(String, () throws -> Void)] = [
     ("SMCControlTransport exposes package FanHardware only", testSMCControlTransportExposesPackageFanHardwareOnly),
     ("SMCControlTransport keeps raw write private", testSMCControlTransportKeepsRawWritePrivate),
     ("SMCControlTransport writes only typed operations from capability", testSMCControlTransportWritesOnlyTypedOperationsFromCapability),
+    ("SMCControlTransport SMCKeyData ABI layout", testSMCControlTransportKeyDataABILayout),
     ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
     ("CLI parses status JSON", testCLIParsesStatusJSON),
     ("CLI parses auto", testCLIParsesAuto),

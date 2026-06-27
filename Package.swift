@@ -49,7 +49,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "FanControlCoreTestRunner",
-            dependencies: ["FanControlCore"],
+            dependencies: ["FanControlCore", "SMCControlTransport"],
             path: "Tests/FanControlCoreTestRunner"
         )
     ]
