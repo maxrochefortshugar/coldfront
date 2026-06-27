@@ -1342,6 +1342,28 @@ func testRestoreExtraCapturedFanFailsClosedBeforeWritingOrClearingLease() throws
     try expect(try store.readIfPresent() == lease, "extra captured fan restore should not clear lease")
 }
 
+func testRestoreDuplicateCapturedFanFailsClosedBeforeWritingOrClearingLease() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-duplicate-captured-fan"))
+    let capturedFans = [
+        CapturedFanState(index: 0, modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(0)),
+        CapturedFanState(index: 0, modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(0)),
+        CapturedFanState(index: 1, modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(0))
+    ]
+    let lease = try installBoostedLeaseState(smc: smc, store: store, capturedFans: capturedFans)
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("restore should reject duplicate captured fan before writes", {
+        _ = try controller.restoreAuto(reason: "duplicate fan")
+    }, matching: { error in
+        guard case .restoreFailed(let message) = error as? FanControlError else { return false }
+        return message.contains("duplicate")
+    })
+
+    try expect(smc.writes.isEmpty, "duplicate captured fan restore should not write hardware")
+    try expect(try store.readIfPresent() == lease, "duplicate captured fan restore should not clear lease")
+}
+
 func testRestoreMissingCapturedFanFailsClosedBeforeWritingOrClearingLease() throws {
     let smc = FakeSMC.mac165()
     let store = FanLeaseStore(directory: temporaryDirectory("restore-missing-captured-fan"))
@@ -1765,6 +1787,7 @@ let tests: [(String, () throws -> Void)] = [
     ("Restore corrupt lease fails closed without clearing", testRestoreCorruptLeaseFailsClosedWithoutClearing),
     ("Restore low FNum fails closed before writing or clearing lease", testRestoreLowFNumFailsClosedBeforeWritingOrClearingLease),
     ("Restore extra captured fan fails closed before writing or clearing lease", testRestoreExtraCapturedFanFailsClosedBeforeWritingOrClearingLease),
+    ("Restore duplicate captured fan fails closed before writing or clearing lease", testRestoreDuplicateCapturedFanFailsClosedBeforeWritingOrClearingLease),
     ("Restore missing captured fan fails closed before writing or clearing lease", testRestoreMissingCapturedFanFailsClosedBeforeWritingOrClearingLease),
     ("Restore empty captured target fails closed before writing or clearing lease", testRestoreEmptyCapturedTargetFailsClosedBeforeWritingOrClearingLease),
     ("Restore NaN captured target fails closed before writing or clearing lease", testRestoreNaNCapturedTargetFailsClosedBeforeWritingOrClearingLease),
