@@ -142,6 +142,19 @@ func testFakeSMCRejectsManualBeforeUnlockSettles() throws {
     try expect(result.smcResult == 0x82, "manual mode should be rejected before unlock")
 }
 
+func testFakeSMCRejectsManualWithoutSafePreManualTarget() throws {
+    let smc = FakeSMC.mac165()
+    let unlock = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "unlock")
+    try expect(unlock.smcResult == 0, "Ftst unlock should be accepted")
+
+    smc.advanceTick()
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let result = try smc.write(.mode(fan: 0, value: 1), capability: .mac165ValidatedOneShot, reason: "manual without safe target")
+    try expect(result.smcResult == 0x82, "manual mode should be rejected without a safe pre-manual target")
+}
+
 func testFakeSMCRejectsManagedObservedModeWrite() throws {
     let smc = FakeSMC.mac165()
 
@@ -195,6 +208,66 @@ func testFakeSMCPreManualTargetWriteSettlesToSafeGuardValue() throws {
     let maximum = FanEncoding.floatValue(try smc.read(try FanKey("F0Mx")).bytes) ?? 0
     try expect(settled >= minimum * 0.95, "pre-manual target should settle to at least 95% of minimum")
     try expect(settled < maximum, "pre-manual target should settle below maximum")
+}
+
+func testFakeSMCRejectsUnsafePreManualTargetRequests() throws {
+    let minimum = FanEncoding.floatValue(try FakeSMC.mac165().read(try FanKey("F0Mn")).bytes) ?? 0
+    let unsafeTargets: [(String, [UInt8])] = [
+        ("zero", FanEncoding.float32LittleEndian(0)),
+        ("nan", FanEncoding.float32LittleEndian(.nan)),
+        ("below safe floor", FanEncoding.float32LittleEndian(minimum * 0.94))
+    ]
+
+    for (label, bytes) in unsafeTargets {
+        let smc = FakeSMC.mac165()
+
+        _ = try smc.write(.target(fan: 0, bytes: bytes), capability: .mac165ValidatedOneShot, reason: "unsafe pre-manual \(label)")
+        smc.advanceTick()
+        smc.advanceTick()
+
+        let settled = FanEncoding.floatValue(try smc.read(try FanKey("F0Tg")).bytes) ?? 0
+        try expect(settled < minimum * 0.95, "unsafe pre-manual \(label) target should not settle to the safe guard")
+    }
+}
+
+func testFakeSMCSettlesValidPreManualTargetToSafeGuard() throws {
+    let smc = FakeSMC.mac165()
+    let maximum = FanEncoding.floatValue(try smc.read(try FanKey("F0Mx")).bytes) ?? 0
+
+    let result = try smc.write(.target(fan: 0, bytes: FanEncoding.float32LittleEndian(maximum)), capability: .mac165ValidatedOneShot, reason: "valid high pre-manual target")
+    try expect(result.smcResult == 0, "valid high pre-manual target write should be accepted")
+
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let settled = FanEncoding.floatValue(try smc.read(try FanKey("F0Tg")).bytes) ?? 0
+    let minimum = FanEncoding.floatValue(try smc.read(try FanKey("F0Mn")).bytes) ?? 0
+    try expect(settled >= minimum * 0.95, "valid high pre-manual target should settle to at least 95% of minimum")
+    try expect(settled < maximum, "valid high pre-manual target should settle below maximum")
+}
+
+func testFakeSMCDelaysFtstOffReadback() throws {
+    let smc = FakeSMC.mac165()
+    _ = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "unlock")
+    smc.advanceTick()
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let onReadback = try smc.read(try FanKey("Ftst"))
+    try expect(onReadback.bytes == [1], "Ftst should read back on after settling")
+
+    let off = try smc.write(.unlock(value: 0), capability: .mac165ValidatedOneShot, reason: "lock")
+    try expect(off.smcResult == 0, "Ftst lock should be accepted")
+
+    let immediate = try smc.read(try FanKey("Ftst"))
+    try expect(immediate.bytes == [1], "Ftst off readback should be delayed")
+
+    smc.advanceTick()
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let settled = try smc.read(try FanKey("Ftst"))
+    try expect(settled.bytes == [0], "Ftst should read back off after delay")
 }
 
 func testFakeSMCRejectsManualZeroTargetWrite() throws {
@@ -279,7 +352,12 @@ func settleManualMode(_ smc: FakeSMC, fan: Int) throws {
     smc.advanceTick()
     smc.advanceTick()
     smc.advanceTick()
-    _ = try smc.write(.mode(fan: fan, value: 1), capability: .mac165ValidatedOneShot, reason: "manual")
+    let maximum = FanEncoding.floatValue(try smc.read(try FanKey("F\(fan)Mx")).bytes) ?? 0
+    _ = try smc.write(.target(fan: fan, bytes: FanEncoding.float32LittleEndian(maximum)), capability: .mac165ValidatedOneShot, reason: "safe pre-manual target")
+    smc.advanceTick()
+    smc.advanceTick()
+    let manual = try smc.write(.mode(fan: fan, value: 1), capability: .mac165ValidatedOneShot, reason: "manual")
+    try expect(manual.smcResult == 0, "manual mode should be accepted after safe pre-manual target")
     smc.advanceTick()
     smc.advanceTick()
 }
@@ -298,10 +376,14 @@ let tests: [(String, () throws -> Void)] = [
     ("Resolver propagates unreadable Ftst", testResolverPropagatesUnreadableFtst),
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
     ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
+    ("FakeSMC rejects manual without safe pre-manual target", testFakeSMCRejectsManualWithoutSafePreManualTarget),
     ("FakeSMC rejects managed observed mode write", testFakeSMCRejectsManagedObservedModeWrite),
     ("FakeSMC release mode settles back to managed", testFakeSMCReleaseModeSettlesBackToManaged),
     ("FakeSMC pre-manual target write does not stick immediately", testFakeSMCPreManualTargetWriteDoesNotStickImmediately),
     ("FakeSMC pre-manual target write settles to safe guard value", testFakeSMCPreManualTargetWriteSettlesToSafeGuardValue),
+    ("FakeSMC rejects unsafe pre-manual target requests", testFakeSMCRejectsUnsafePreManualTargetRequests),
+    ("FakeSMC settles valid pre-manual target to safe guard", testFakeSMCSettlesValidPreManualTargetToSafeGuard),
+    ("FakeSMC delays Ftst off readback", testFakeSMCDelaysFtstOffReadback),
     ("FakeSMC rejects manual zero target write", testFakeSMCRejectsManualZeroTargetWrite),
     ("FakeSMC rejects manual above maximum target write", testFakeSMCRejectsManualAboveMaximumTargetWrite),
     ("FakeSMC rejects manual non-finite target write", testFakeSMCRejectsManualNonFiniteTargetWrite),

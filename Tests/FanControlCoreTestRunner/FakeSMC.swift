@@ -104,9 +104,11 @@ final class FakeSMC: FanHardware {
             return record(operation, key: key, bytes: bytes, reason: reason, result: rejection.smcResult)
         }
 
-        if case .mode(_, let value) = operation {
+        if case .mode(let fan, let value) = operation {
             if value == capability.manualCommand {
-                guard entries["Ftst"]?.bytes == [capability.unlockOn] else {
+                guard entries["Ftst"]?.bytes == [capability.unlockOn],
+                      safePreManualTargetReadback(fan: fan, capability: capability)
+                else {
                     return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
                 }
             } else if value != capability.releaseCommand {
@@ -131,7 +133,9 @@ final class FakeSMC: FanHardware {
 
         if case .target(let fan, _) = operation {
             guard entries["F\(fan)Md"]?.bytes == [capability.manualCommand] else {
-                pending.append((applyAt: tick + 2, key: key.stringValue, bytes: preManualTargetGuardBytes(fan: fan, capability: capability)))
+                if validPreManualTargetRequest(bytes, fan: fan, capability: capability) {
+                    pending.append((applyAt: tick + 2, key: key.stringValue, bytes: preManualTargetGuardBytes(fan: fan, capability: capability)))
+                }
                 return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
             }
 
@@ -155,6 +159,24 @@ final class FakeSMC: FanHardware {
               let maximum = FanEncoding.floatValue(entries["F\(fan)Mx"]?.bytes ?? [])
         else { return false }
         return target >= minimum && target <= maximum
+    }
+
+    private func validPreManualTargetRequest(_ bytes: [UInt8], fan: Int, capability: FanCapability) -> Bool {
+        guard let target = FanEncoding.floatValue(bytes),
+              let minimum = FanEncoding.floatValue(entries["F\(fan)Mn"]?.bytes ?? []),
+              let maximum = FanEncoding.floatValue(entries["F\(fan)Mx"]?.bytes ?? [])
+        else { return false }
+        let nearMaximum = maximum * 0.95
+        return target >= minimum && target >= nearMaximum && target <= maximum
+    }
+
+    private func safePreManualTargetReadback(fan: Int, capability: FanCapability) -> Bool {
+        guard let target = FanEncoding.floatValue(entries["F\(fan)Tg"]?.bytes ?? []),
+              let minimum = FanEncoding.floatValue(entries["F\(fan)Mn"]?.bytes ?? []),
+              let maximum = FanEncoding.floatValue(entries["F\(fan)Mx"]?.bytes ?? [])
+        else { return false }
+        let safeFloor = max(minimum * capability.preManualMinimumMultiplier, 1)
+        return target >= safeFloor && target < maximum
     }
 
     private func preManualTargetGuardBytes(fan: Int, capability: FanCapability) -> [UInt8] {
