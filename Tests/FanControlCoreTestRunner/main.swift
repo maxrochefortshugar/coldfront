@@ -1065,6 +1065,64 @@ func testBoostRestoresOnWriteFailureAfterLeaseCreation() throws {
     try expect(try store.readIfPresent() != nil, "failed boost should leave lease for recovery rather than silently clearing it")
 }
 
+func testBoostRefusesPreexistingUnlockBeforeLeaseClaim() throws {
+    let smc = FakeSMC.mac165()
+    smc.setRawEntryBytes("Ftst", [1])
+    let store = FanLeaseStore(directory: temporaryDirectory("boost-preexisting-unlock"))
+    let controller = boostController(smc: smc, store: store)
+
+    try expectThrows("boost should refuse preexisting Ftst unlock", {
+        _ = try controller.boostMax(leaseSeconds: 60, reason: "preexisting unlock")
+    }, matching: { error in
+        guard case .unsafeState(let message) = error as? FanControlError else { return false }
+        return message.contains("Ftst")
+    })
+
+    try expect(smc.writes.isEmpty, "preexisting Ftst unlock should refuse before hardware writes")
+    try expect(try store.readIfPresent() == nil, "preexisting Ftst unlock should refuse before lease claim")
+}
+
+func testBoostAuditsAndRejectsNonzeroKernReturnBeforeRollback() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("boost-kern-return-rejection"))
+    let clock = TestClock(onSleep: { smc.advanceTick() })
+    let logger = InMemoryFanControlLogger()
+    smc.rejectWrite(
+        operation: .mode(fan: 1, value: 1),
+        key: "F1Md",
+        kernReturn: -536_870_212,
+        smcResult: 0,
+        smcStatus: 0
+    )
+    let controller = boostController(smc: smc, store: store, clock: clock, logger: logger)
+
+    try expectThrows("boost should reject nonzero kernReturn write", {
+        _ = try controller.boostMax(leaseSeconds: 60, reason: "kern failure")
+    }, matching: { error in
+        error as? FanControlError == .writeRejected(key: "F1Md", smcResult: 0)
+    })
+
+    let lease = try store.readIfPresent()
+    try expect(lease != nil, "failed kernReturn boost should leave lease for recovery")
+    guard let failedEventIndex = logger.events.firstIndex(where: { $0.key == "F1Md" && $0.kernReturn != 0 }) else {
+        throw TestFailure(description: "failed write audit event should exist")
+    }
+    let failedEvent = logger.events[failedEventIndex]
+    try expect(failedEvent.key == "F1Md", "failed write audit should include key")
+    try expect(failedEvent.oldRaw == [3], "failed write audit should include old mode bytes")
+    try expect(failedEvent.newRaw == [1], "failed write audit should include requested mode bytes")
+    try expect(failedEvent.kernReturn == -536_870_212, "failed write audit should include kernReturn")
+    try expect(failedEvent.smcResult == 0, "failed write audit should include smcResult")
+    try expect(failedEvent.smcStatus == 0, "failed write audit should include smcStatus")
+    try expect(failedEvent.leaseID == lease?.id, "failed write audit should include lease ID")
+
+    if let firstRollbackIndex = logger.events.firstIndex(where: { $0.reason.hasPrefix("rollback ") }) {
+        try expect(failedEventIndex < firstRollbackIndex, "failed write audit should be recorded before rollback events")
+    } else {
+        throw TestFailure(description: "rollback audit events should exist after failed write")
+    }
+}
+
 func testBoostUsesHardwareValidatedSequence() throws {
     let smc = FakeSMC.mac165()
     let store = FanLeaseStore(directory: temporaryDirectory("boost-validated-sequence"))
@@ -1345,6 +1403,8 @@ let tests: [(String, () throws -> Void)] = [
     ("FakeSMC raw entry bytes helper mutates and reads targets", testFakeSMCRawEntryBytesHelperMutatesAndReadsTargets),
     ("Boost creates lease before first write", testBoostCreatesLeaseBeforeFirstWrite),
     ("Boost restores on write failure after lease creation", testBoostRestoresOnWriteFailureAfterLeaseCreation),
+    ("Boost refuses preexisting unlock before lease claim", testBoostRefusesPreexistingUnlockBeforeLeaseClaim),
+    ("Boost audits and rejects nonzero kernReturn before rollback", testBoostAuditsAndRejectsNonzeroKernReturnBeforeRollback),
     ("Boost uses hardware validated sequence", testBoostUsesHardwareValidatedSequence),
     ("Boost refuses when active control disabled", testBoostRefusesWhenActiveControlDisabled)
 ]

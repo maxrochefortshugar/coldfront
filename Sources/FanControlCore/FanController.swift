@@ -240,6 +240,11 @@ package final class FanController {
         guard !status.fans.contains(where: { $0.mode == capability.manualCommand }) else {
             throw FanControlError.unsafeState("refusing to boost while a fan is already manual")
         }
+        if capability.unlockAvailable {
+            guard status.ftst == capability.unlockOff else {
+                throw FanControlError.unsafeState("refusing to boost while Ftst is already unlocked")
+            }
+        }
     }
 
     private func createLease(from status: FanControlStatus, leaseSeconds: Int, reason: String) throws -> FanLease {
@@ -383,6 +388,9 @@ package final class FanController {
             smcStatus: result.smcStatus,
             reason: reason
         ))
+        if result.kernReturn != 0 {
+            throw FanControlError.writeRejected(key: key.stringValue, smcResult: result.smcResult)
+        }
         if result.smcResult != 0 {
             throw FanControlError.writeRejected(key: key.stringValue, smcResult: result.smcResult)
         }

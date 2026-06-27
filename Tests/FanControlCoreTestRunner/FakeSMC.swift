@@ -14,7 +14,9 @@ final class FakeSMC: FanHardware {
         let key: String
         let bytes: [UInt8]
         let reason: String
+        let kernReturn: Int32
         let smcResult: UInt8
+        let smcStatus: UInt8
     }
 
     let serviceName = "FakeSMC"
@@ -23,7 +25,7 @@ final class FakeSMC: FanHardware {
     private var entries: [String: Entry]
     private var tick = 0
     private var pending: [(applyAt: Int, key: String, bytes: [UInt8], releaseSettledFan: Int?)] = []
-    private var scriptedRejections: [(operation: FanWriteOperation, key: String, smcResult: UInt8)] = []
+    private var scriptedRejections: [(operation: FanWriteOperation, key: String, result: FanWriteResult)] = []
     private var releaseSettledFans: Set<Int> = []
 
     init(entries: [String: Entry]) {
@@ -69,7 +71,15 @@ final class FakeSMC: FanHardware {
     }
 
     func rejectWrite(operation: FanWriteOperation, key: String, smcResult: UInt8) {
-        scriptedRejections.append((operation: operation, key: key, smcResult: smcResult))
+        rejectWrite(operation: operation, key: key, kernReturn: 0, smcResult: smcResult, smcStatus: 0)
+    }
+
+    func rejectWrite(operation: FanWriteOperation, key: String, kernReturn: Int32, smcResult: UInt8, smcStatus: UInt8) {
+        scriptedRejections.append((
+            operation: operation,
+            key: key,
+            result: FanWriteResult(kernReturn: kernReturn, smcResult: smcResult, smcStatus: smcStatus)
+        ))
     }
 
     func setRawEntryBytes(_ key: String, _ bytes: [UInt8]) {
@@ -115,7 +125,7 @@ final class FakeSMC: FanHardware {
         onBeforeWrite?(operation, key.stringValue)
 
         if let rejection = scriptedRejections.first(where: { $0.operation == operation && $0.key == key.stringValue }) {
-            return record(operation, key: key, bytes: bytes, reason: reason, result: rejection.smcResult)
+            return record(operation, key: key, bytes: bytes, reason: reason, result: rejection.result)
         }
 
         if case .mode(_, let value) = operation {
@@ -178,8 +188,20 @@ final class FakeSMC: FanHardware {
     }
 
     private func record(_ operation: FanWriteOperation, key: FanKey, bytes: [UInt8], reason: String, result: UInt8) -> FanWriteResult {
-        writes.append(WriteEvent(operation: operation, key: key.stringValue, bytes: bytes, reason: reason, smcResult: result))
-        return FanWriteResult(kernReturn: 0, smcResult: result, smcStatus: 0)
+        record(operation, key: key, bytes: bytes, reason: reason, result: FanWriteResult(kernReturn: 0, smcResult: result, smcStatus: 0))
+    }
+
+    private func record(_ operation: FanWriteOperation, key: FanKey, bytes: [UInt8], reason: String, result: FanWriteResult) -> FanWriteResult {
+        writes.append(WriteEvent(
+            operation: operation,
+            key: key.stringValue,
+            bytes: bytes,
+            reason: reason,
+            kernReturn: result.kernReturn,
+            smcResult: result.smcResult,
+            smcStatus: result.smcStatus
+        ))
+        return result
     }
 
     private func validManualTarget(_ bytes: [UInt8], fan: Int) -> Bool {
