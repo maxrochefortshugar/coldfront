@@ -173,9 +173,65 @@ func testStatusAllRecoveryFlagsAndGoodHardwareAllowsActiveControl() throws {
     try expect(status.activeAvailability.reasons.isEmpty, "fully validated good FakeSMC hardware should not report availability reasons")
 }
 
+func testStatusReportsPlatformMismatchAvailabilityReason() throws {
+    let smc = FakeSMC.mac165()
+    smc.setRawEntryBytes("RPlt", Array("j999x".utf8) + [0, 0, 0])
+    let controller = FanController(hardware: smc, capability: fullyValidatedCapability(), clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.platform == "j999x", "status should include the observed platform")
+    try expect(status.activeAvailability.allowed == false, "platform mismatch should block active control")
+    try expect(status.activeAvailability.reasons.contains("platform mismatch"), "platform mismatch reason should be included")
+}
+
+func testStatusReportsFanCountMismatchWithoutReadingAbsentExtraFans() throws {
+    let smc = FakeSMC.mac165()
+    smc.setRawEntryBytes("FNum", [3])
+    let controller = FanController(hardware: smc, capability: fullyValidatedCapability(), clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.fanCount == 3, "status should report observed FNum")
+    try expect(status.fans.count == 2, "status should read only capability fan count when FNum is higher")
+    try expect(status.activeAvailability.allowed == false, "fan count mismatch should block active control")
+    try expect(status.activeAvailability.reasons.contains("fan count mismatch"), "fan count mismatch reason should be included")
+}
+
+func testStatusReportsEveryValidationGateReason() throws {
+    let smc = FakeSMC.mac165()
+    let capability = FanCapability.mac165ValidatedOneShot.withValidation(validationState(
+        read: false,
+        boostMaxOneShot: false,
+        restoreAutoOneShot: false,
+        targetClearAfterNonManual: false,
+        crashRecovery: false,
+        parentDeathRecovery: false,
+        missedHeartbeatRecovery: false,
+        leaseExpiryRecovery: false,
+        signalRecovery: false,
+        sleepWakeRecovery: false
+    ))
+    let controller = FanController(hardware: smc, capability: capability, clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.activeAvailability.allowed == false, "unverified validation gates should block active control")
+    try expect(status.activeAvailability.reasons.contains("read validation unverified"), "read gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("boost max one-shot unverified"), "boost validation gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("restore auto one-shot unverified"), "restore validation gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("target clear after non-manual unverified"), "target clear validation gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("crash recovery unverified"), "crash recovery gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("parent-death recovery unverified"), "parent-death recovery gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("missed-heartbeat recovery unverified"), "missed-heartbeat recovery gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("lease-expiry recovery unverified"), "lease-expiry recovery gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("signal recovery unverified"), "signal recovery gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("sleep/wake recovery unverified"), "sleep/wake recovery gate should be explained")
+}
+
 func testStatusReportsEveryNonRecoveryValidationGate() throws {
     let smc = FakeSMC.mac165()
-    let capability = FanCapability.mac165ValidatedOneShot.withValidation(FanValidationState(
+    let capability = FanCapability.mac165ValidatedOneShot.withValidation(validationState(
         read: false,
         boostMaxOneShot: false,
         restoreAutoOneShot: false,
@@ -248,7 +304,7 @@ func testStatusRejectsPlatformSizeMismatch() throws {
 
 func testStatusReportsFanMinMaxOutOfBounds() throws {
     let smc = FakeSMC.mac165()
-    smc.setEntry("F0Mx", type: "flt ", size: 4, bytes: FanEncoding.float32LittleEndian(20_000))
+    smc.setRawEntryBytes("F0Mx", FanEncoding.float32LittleEndian(20_000))
     let capability = fullyValidatedCapability()
     let controller = FanController(hardware: smc, capability: capability, clock: TestClock())
 
@@ -554,18 +610,33 @@ func settleManualMode(_ smc: FakeSMC, fan: Int) throws {
 }
 
 func fullyValidatedCapability() -> FanCapability {
-    FanCapability.mac165ValidatedOneShot.withValidation(FanValidationState(
-        read: true,
-        boostMaxOneShot: true,
-        restoreAutoOneShot: true,
-        targetClearAfterNonManual: true,
-        crashRecovery: true,
-        parentDeathRecovery: true,
-        missedHeartbeatRecovery: true,
-        leaseExpiryRecovery: true,
-        signalRecovery: true,
-        sleepWakeRecovery: true
-    ))
+    FanCapability.mac165ValidatedOneShot.withValidation(validationState())
+}
+
+func validationState(
+    read: Bool = true,
+    boostMaxOneShot: Bool = true,
+    restoreAutoOneShot: Bool = true,
+    targetClearAfterNonManual: Bool = true,
+    crashRecovery: Bool = true,
+    parentDeathRecovery: Bool = true,
+    missedHeartbeatRecovery: Bool = true,
+    leaseExpiryRecovery: Bool = true,
+    signalRecovery: Bool = true,
+    sleepWakeRecovery: Bool = true
+) -> FanValidationState {
+    FanValidationState(
+        read: read,
+        boostMaxOneShot: boostMaxOneShot,
+        restoreAutoOneShot: restoreAutoOneShot,
+        targetClearAfterNonManual: targetClearAfterNonManual,
+        crashRecovery: crashRecovery,
+        parentDeathRecovery: parentDeathRecovery,
+        missedHeartbeatRecovery: missedHeartbeatRecovery,
+        leaseExpiryRecovery: leaseExpiryRecovery,
+        signalRecovery: signalRecovery,
+        sleepWakeRecovery: sleepWakeRecovery
+    )
 }
 
 func expectStatusInvalidReading(_ message: String, key: String, reason: String, mutate: (FakeSMC) -> Void) throws {
@@ -609,6 +680,9 @@ let tests: [(String, () throws -> Void)] = [
     ("Status missing Ftst keeps status but blocks active control", testStatusMissingFtstKeepsStatusButBlocksActiveControl),
     ("Status invalid Ftst keeps status but blocks active control", testStatusInvalidFtstKeepsStatusButBlocksActiveControl),
     ("Status all recovery flags and good hardware allows active control", testStatusAllRecoveryFlagsAndGoodHardwareAllowsActiveControl),
+    ("Status reports platform mismatch availability reason", testStatusReportsPlatformMismatchAvailabilityReason),
+    ("Status reports fan count mismatch without reading absent extra fans", testStatusReportsFanCountMismatchWithoutReadingAbsentExtraFans),
+    ("Status reports every validation gate reason", testStatusReportsEveryValidationGateReason),
     ("Status reports every non-recovery validation gate", testStatusReportsEveryNonRecoveryValidationGate),
     ("Status rejects wrong target type", testStatusRejectsWrongTargetType),
     ("Status rejects wrong target size", testStatusRejectsWrongTargetSize),

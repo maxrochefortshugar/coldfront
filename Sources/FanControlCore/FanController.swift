@@ -14,7 +14,8 @@ package final class FanController {
     package func status() throws -> FanControlStatus {
         let fanCount = Int(try readUInt8(capability.fanCountKey))
         let platform = try readASCII(capability.platformKey)
-        let fans = try (0..<fanCount).map { try readFan($0) }
+        let statusFanCount = min(fanCount, capability.fanCount)
+        let fans = try (0..<statusFanCount).map { try readFan($0) }
         let ftst: UInt8?
         let unlockStatusUnavailable: Bool
         if capability.unlockAvailable {
