@@ -6,6 +6,82 @@ func testCoreBoundary() throws {
     try expect(key.stringValue == "F0Tg", "FanKey should preserve four-character keys")
 }
 
+func testReadOnlyCSMCHeaderHasNoWriteAPI() throws {
+    let header = try repositorySourceText("Sources/CSMC/include/CSMC.h")
+
+    try expect(!header.contains("Write"), "CSMC.h should not expose a Write API")
+    try expect(!header.contains("write"), "CSMC.h should not expose a write API")
+}
+
+func testSMCControlTransportHasNoPublicRawWriteAPI() throws {
+    let source = try smcControlTransportSource()
+
+    try expect(!source.contains("public func write(key"), "SMCControlTransport should not expose public raw write(key:) API")
+    try expect(!source.contains("public func write(_ key"), "SMCControlTransport should not expose public raw write key API")
+    try expect(!source.contains("package func write(key"), "SMCControlTransport should not expose package raw write(key:) API")
+    try expect(!source.contains("package func write(_ key"), "SMCControlTransport should not expose package raw write key API")
+}
+
+func testSMCControlTransportExposesPackageFanHardwareOnly() throws {
+    let source = try smcControlTransportSource()
+
+    try expect(source.contains("package final class SMCFanHardware: FanHardware"), "SMCControlTransport should expose package-scoped SMCFanHardware conforming to FanHardware")
+    try expect(source.contains("package init() throws"), "SMCFanHardware initializer should be package-scoped")
+    try expect(source.contains("package func read(_ key: FanKey) throws -> FanReading"), "SMCFanHardware read surface should be package-scoped and typed")
+    try expect(source.contains("package func write(_ operation: FanWriteOperation, capability: FanCapability, reason: String) throws -> FanWriteResult"), "SMCFanHardware write surface should accept typed FanWriteOperation only")
+}
+
+func testSMCControlTransportKeepsRawWritePrivate() throws {
+    let source = try smcControlTransportSource()
+
+    try expect(source.contains("private func privateWrite(key: FanKey, bytes: [UInt8]) throws -> FanWriteResult"), "raw privateWrite helper should be private and typed by FanKey")
+    try expect(!source.contains("func write(key"), "SMCControlTransport should not expose unsupported raw write(key:) symbols")
+    try expect(!source.contains("func write(_ key"), "SMCControlTransport should not expose unsupported raw write key symbols")
+}
+
+func testSMCControlTransportWritesOnlyTypedOperationsFromCapability() throws {
+    let source = try smcControlTransportSource()
+
+    try expect(source.contains("switch operation"), "SMCFanHardware write should switch over typed FanWriteOperation")
+    try expect(source.contains("case .unlock(let value):"), "SMCFanHardware write should handle unlock operations")
+    try expect(source.contains("capability.unlockKey"), "unlock writes should derive Ftst from FanCapability")
+    try expect(source.contains("case .mode(let fan, let value):"), "SMCFanHardware write should handle mode operations")
+    try expect(source.contains("try capability.modeKey(for: fan)"), "mode writes should derive mode key from FanCapability")
+    try expect(source.contains("case .target(let fan, let bytes):"), "SMCFanHardware write should handle target operations")
+    try expect(source.contains("try capability.targetKey(for: fan)"), "target writes should derive target key from FanCapability")
+    try expect(!source.contains("FanKey(\"F"), "SMCFanHardware write path should not derive write keys from raw caller strings")
+}
+
+func smcControlTransportSource() throws -> String {
+    try repositorySourceText("Sources/SMCControlTransport/SMCControlTransport.swift")
+}
+
+func repositorySourceText(_ path: String) throws -> String {
+    try String(
+        contentsOf: repositoryFileURL(path),
+        encoding: .utf8
+    )
+}
+
+func repositoryFileURL(_ path: String) throws -> URL {
+    let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let currentDirectoryCandidate = currentDirectory.appendingPathComponent(path)
+    if FileManager.default.fileExists(atPath: currentDirectoryCandidate.path) {
+        return currentDirectoryCandidate
+    }
+
+    var sourceFileRoot = URL(fileURLWithPath: #filePath)
+    while sourceFileRoot.path != "/" {
+        let candidate = sourceFileRoot.appendingPathComponent(path)
+        if FileManager.default.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+        sourceFileRoot.deleteLastPathComponent()
+    }
+
+    throw TestFailure(description: "missing repository file \(path)")
+}
+
 func testCLIParsesBoundedBoostDuration() throws {
     let command = try FanControlCommand.parse(["boost", "max", "--for", "10m", "--i-understand-active-fan-control"])
     let maxCommand = try FanControlCommand.parse(["boost", "max", "--for", "120m", "--i-understand-active-fan-control"])
@@ -1823,6 +1899,11 @@ func expectStatusInvalidReading(_ message: String, key: String, mutate: (FakeSMC
 
 let tests: [(String, () throws -> Void)] = [
     ("Core boundary", testCoreBoundary),
+    ("Read-only CSMC header has no write API", testReadOnlyCSMCHeaderHasNoWriteAPI),
+    ("SMCControlTransport has no public raw write API", testSMCControlTransportHasNoPublicRawWriteAPI),
+    ("SMCControlTransport exposes package FanHardware only", testSMCControlTransportExposesPackageFanHardwareOnly),
+    ("SMCControlTransport keeps raw write private", testSMCControlTransportKeepsRawWritePrivate),
+    ("SMCControlTransport writes only typed operations from capability", testSMCControlTransportWritesOnlyTypedOperationsFromCapability),
     ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
     ("CLI parses status JSON", testCLIParsesStatusJSON),
     ("CLI parses auto", testCLIParsesAuto),
