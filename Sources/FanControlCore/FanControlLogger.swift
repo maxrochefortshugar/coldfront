@@ -127,6 +127,11 @@ package final class JSONLFanControlLogger: FanControlLogger {
     }
 
     private func append(_ data: Data) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
         let fd = open(url.path, O_APPEND | O_CREAT | O_WRONLY, 0o644)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
 

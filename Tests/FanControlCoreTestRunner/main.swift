@@ -457,6 +457,41 @@ func testJSONLAuditLoggerAppendsTwoParseableLines() throws {
     try expect(second?["capabilityFingerprint"] as? String == "second", "second JSONL event should be appended")
 }
 
+func testJSONLAuditLoggerCreatesMissingParentDirectory() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("missing")
+    let url = root
+        .appendingPathComponent("subdir")
+        .appendingPathComponent("fan-audit")
+        .appendingPathExtension("jsonl")
+    try? FileManager.default.removeItem(at: root)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let logger = JSONLFanControlLogger(url: url)
+    try logger.record(FanWriteAuditEvent(
+        timestampUnix: 1,
+        serviceName: "FakeSMC",
+        capabilityFingerprint: "created-parent-directory",
+        leaseID: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
+        key: "Ftst",
+        oldRaw: [0],
+        newRaw: [1],
+        kernReturn: 0,
+        smcResult: 0,
+        smcStatus: 0,
+        reason: "missing parent directory"
+    ))
+
+    try expect(FileManager.default.fileExists(atPath: url.path), "JSONL logger should create audit log file")
+
+    let data = try Data(contentsOf: url)
+    let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+    try expect(lines.count == 1, "JSONL logger should write one JSONL line after creating parent directories")
+
+    let object = try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any]
+    try expect(object?["capabilityFingerprint"] as? String == "created-parent-directory", "JSONL line should be parseable")
+}
+
 func testFakeSMCDelayedFtstReadback() throws {
     let smc = FakeSMC.mac165()
     let first = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "test unlock")
@@ -840,6 +875,7 @@ let tests: [(String, () throws -> Void)] = [
     ("JSONL audit logger encodes Task 5 field names", testJSONLAuditLoggerEncodesTask5FieldNames),
     ("JSONL audit logger encodes nil leaseID as null", testJSONLAuditLoggerEncodesNilLeaseIDAsNull),
     ("JSONL audit logger appends two parseable lines", testJSONLAuditLoggerAppendsTwoParseableLines),
+    ("JSONL audit logger creates missing parent directory", testJSONLAuditLoggerCreatesMissingParentDirectory),
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
     ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
     ("FakeSMC rejects manual without safe pre-manual target", testFakeSMCRejectsManualWithoutSafePreManualTarget),
