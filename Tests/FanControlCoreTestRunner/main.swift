@@ -308,6 +308,27 @@ func testCLIParsesAuto() throws {
     try expect(command == .auto, "auto should parse as the automatic restore command")
 }
 
+func testCLIParsesTenSecondValidationOneShot() throws {
+    let command = try FanControlCommand.parse([
+        "validate", "one-shot", "--for", "10s", "--i-understand-active-fan-control"
+    ])
+
+    try expect(
+        command == .validateOneShot(durationSeconds: 10, acknowledgedRisk: true),
+        "validation one-shot should parse an explicit ten second duration"
+    )
+}
+
+func testCLIRejectsValidationOneShotOverTenSeconds() throws {
+    try expectThrows("validation one-shot should reject durations above ten seconds", {
+        _ = try FanControlCommand.parse([
+            "validate", "one-shot", "--for", "11s", "--i-understand-active-fan-control"
+        ])
+    }, matching: { error in
+        error as? FanControlCommandParseError == .durationOutOfBounds(seconds: 11, maxSeconds: 10)
+    })
+}
+
 func testCLIUsesDefaultBoostDuration() throws {
     let command = try FanControlCommand.parse(["boost", "max", "--i-understand-active-fan-control"])
 
@@ -1463,6 +1484,27 @@ func testBoostRestoresOnWriteFailureAfterLeaseCreation() throws {
     try expect(try store.readIfPresent() != nil, "failed boost should leave lease for recovery rather than silently clearing it")
 }
 
+func testBoostClearsLeaseWhenFirstWriteRejected() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("boost-first-write-rejected"))
+    smc.rejectWrite(
+        operation: .unlock(value: 1),
+        key: "Ftst",
+        kernReturn: -536_870_207,
+        smcResult: 0,
+        smcStatus: 0
+    )
+    let controller = boostController(smc: smc, store: store)
+
+    try expectThrows("boost should throw first write rejection", {
+        _ = try controller.boostMax(leaseSeconds: 60, reason: "first write rejected")
+    }, matching: { error in
+        error as? FanControlError == .writeRejected(key: "Ftst", smcResult: 0)
+    })
+
+    try expect(try store.readIfPresent() == nil, "first-write rejection should clear lease because no hardware write was accepted")
+}
+
 func testBoostRefusesPreexistingUnlockBeforeLeaseClaim() throws {
     let smc = FakeSMC.mac165()
     smc.setRawEntryBytes("Ftst", [1])
@@ -2188,6 +2230,8 @@ let tests: [(String, () throws -> Void)] = [
     ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
     ("CLI parses status JSON", testCLIParsesStatusJSON),
     ("CLI parses auto", testCLIParsesAuto),
+    ("CLI parses ten second validation one-shot", testCLIParsesTenSecondValidationOneShot),
+    ("CLI rejects validation one-shot over ten seconds", testCLIRejectsValidationOneShotOverTenSeconds),
     ("CLI uses default boost duration", testCLIUsesDefaultBoostDuration),
     ("CLI rejects missing acknowledgement", testCLIRejectsMissingAcknowledgement),
     ("CLI rejects lease over two hours", testCLIRejectsLeaseOverTwoHours),
@@ -2271,6 +2315,7 @@ let tests: [(String, () throws -> Void)] = [
     ("FakeSMC raw entry bytes helper mutates and reads targets", testFakeSMCRawEntryBytesHelperMutatesAndReadsTargets),
     ("Boost creates lease before first write", testBoostCreatesLeaseBeforeFirstWrite),
     ("Boost restores on write failure after lease creation", testBoostRestoresOnWriteFailureAfterLeaseCreation),
+    ("Boost clears lease when first write rejected", testBoostClearsLeaseWhenFirstWriteRejected),
     ("Boost refuses preexisting unlock before lease claim", testBoostRefusesPreexistingUnlockBeforeLeaseClaim),
     ("Boost audits and rejects nonzero kernReturn before rollback", testBoostAuditsAndRejectsNonzeroKernReturnBeforeRollback),
     ("Boost uses hardware validated sequence", testBoostUsesHardwareValidatedSequence),

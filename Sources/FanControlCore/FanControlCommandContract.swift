@@ -30,6 +30,9 @@ public enum FanControlCommandContract {
 
         case .auto:
             throw FanControlCommandContractError.unsupportedDisabledActiveControlCommand("auto")
+
+        case .validateOneShot:
+            throw FanControlCommandContractError.unsupportedDisabledActiveControlCommand("validate one-shot")
         }
     }
 

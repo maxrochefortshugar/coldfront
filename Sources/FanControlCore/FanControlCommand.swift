@@ -3,6 +3,7 @@ public enum FanControlCommand: Equatable, Sendable {
     case boostMax(durationSeconds: Int, acknowledgedRisk: Bool)
     case auto
     case runBoostMax(durationSeconds: Int, workload: [String], acknowledgedRisk: Bool)
+    case validateOneShot(durationSeconds: Int, acknowledgedRisk: Bool)
 
     public static func parse(_ args: [String], maxDurationSeconds: Int = 7_200) throws -> FanControlCommand {
         guard let first = args.first else {
@@ -48,6 +49,17 @@ public enum FanControlCommand: Equatable, Sendable {
                 acknowledgedRisk: options.acknowledgedRisk
             )
 
+        case "validate":
+            guard args.count >= 2, args[1] == "one-shot" else {
+                throw FanControlCommandParseError.usage("expected: validate one-shot [--for 10s] --i-understand-active-fan-control")
+            }
+            let options = try parseBoostOptions(
+                Array(args.dropFirst(2)),
+                maxDurationSeconds: 10,
+                defaultDurationSeconds: 10
+            )
+            return .validateOneShot(durationSeconds: options.durationSeconds, acknowledgedRisk: options.acknowledgedRisk)
+
         default:
             throw FanControlCommandParseError.unknownArgument(first)
         }
@@ -55,9 +67,10 @@ public enum FanControlCommand: Equatable, Sendable {
 
     private static func parseBoostOptions(
         _ args: [String],
-        maxDurationSeconds: Int
+        maxDurationSeconds: Int,
+        defaultDurationSeconds: Int = 600
     ) throws -> (durationSeconds: Int, acknowledgedRisk: Bool) {
-        var durationSeconds = 600
+        var durationSeconds = defaultDurationSeconds
         var acknowledgedRisk = false
         var sawDuration = false
         var index = 0
@@ -92,6 +105,12 @@ public enum FanControlCommand: Equatable, Sendable {
 
         guard acknowledgedRisk else {
             throw FanControlCommandParseError.missingAcknowledgement
+        }
+        guard durationSeconds <= maxDurationSeconds else {
+            throw FanControlCommandParseError.durationOutOfBounds(
+                seconds: durationSeconds,
+                maxSeconds: maxDurationSeconds
+            )
         }
         return (durationSeconds, acknowledgedRisk)
     }

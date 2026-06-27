@@ -123,22 +123,32 @@ package final class FanController {
         try validateBoostStatus(snapshot)
         let lease = try createLease(from: snapshot, leaseSeconds: leaseSeconds, reason: reason)
         try leaseStore.claim(lease)
+        var acceptedPrimaryWrite = false
+
+        func writePrimary(_ operation: FanWriteOperation, reason: String) throws {
+            try write(operation, lease: lease, reason: reason)
+            acceptedPrimaryWrite = true
+        }
 
         do {
             if capability.unlockAvailable {
-                try write(.unlock(value: capability.unlockOn), lease: lease, reason: "boost unlock: \(reason)")
+                try writePrimary(.unlock(value: capability.unlockOn), reason: "boost unlock: \(reason)")
                 try pollUnlock(value: capability.unlockOn)
             }
-            try requestTargetsToMax(snapshot, lease: lease, reason: "boost pre-manual target: \(reason)")
+            try requestTargetsToMax(snapshot, lease: lease, reason: "boost pre-manual target: \(reason)", write: writePrimary)
             try waitForSafePreManualTargets(snapshot)
-            try writeManualModes(snapshot, lease: lease, reason: "boost manual mode: \(reason)")
+            try writeManualModes(snapshot, lease: lease, reason: "boost manual mode: \(reason)", write: writePrimary)
             try pollManualModes(snapshot)
-            try requestTargetsToMax(snapshot, lease: lease, reason: "boost max target: \(reason)")
+            try requestTargetsToMax(snapshot, lease: lease, reason: "boost max target: \(reason)", write: writePrimary)
             try pollTargetsAtMax(snapshot)
             let maxActualRPM = try verifyBoostRamp(snapshot)
             return FanBoostResult(leaseID: lease.id, verified: true, maxActualRPM: maxActualRPM)
         } catch {
-            privateRollbackAfterBoostFailure(snapshot: snapshot, lease: lease, reason: "boost failed: \(error)")
+            if acceptedPrimaryWrite {
+                privateRollbackAfterBoostFailure(snapshot: snapshot, lease: lease, reason: "boost failed: \(error)")
+            } else {
+                try? leaseStore.clear(leaseID: lease.id)
+            }
             throw error
         }
     }
@@ -330,15 +340,25 @@ package final class FanController {
         )
     }
 
-    private func requestTargetsToMax(_ status: FanControlStatus, lease: FanLease, reason: String) throws {
+    private func requestTargetsToMax(
+        _ status: FanControlStatus,
+        lease: FanLease,
+        reason: String,
+        write: (FanWriteOperation, String) throws -> Void
+    ) throws {
         for fan in status.fans {
-            try write(.target(fan: fan.index, bytes: FanEncoding.float32LittleEndian(fan.maximumRPM)), lease: lease, reason: reason)
+            try write(.target(fan: fan.index, bytes: FanEncoding.float32LittleEndian(fan.maximumRPM)), reason)
         }
     }
 
-    private func writeManualModes(_ status: FanControlStatus, lease: FanLease, reason: String) throws {
+    private func writeManualModes(
+        _ status: FanControlStatus,
+        lease: FanLease,
+        reason: String,
+        write: (FanWriteOperation, String) throws -> Void
+    ) throws {
         for fan in status.fans {
-            try write(.mode(fan: fan.index, value: capability.manualCommand), lease: lease, reason: reason)
+            try write(.mode(fan: fan.index, value: capability.manualCommand), reason)
         }
     }
 
