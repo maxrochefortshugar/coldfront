@@ -165,12 +165,12 @@ package final class FanController {
         }
 
         let snapshot = try status()
-        let capturedTargets = try capturedTargetsByFanIndex(lease)
-        for fan in snapshot.fans {
-            guard capturedTargets[fan.index] != nil else {
-                throw FanControlError.restoreFailed("lease missing captured target for fan \(fan.index)")
-            }
+        guard snapshot.fanCount == capability.fanCount,
+              snapshot.fans.count == capability.fanCount
+        else {
+            throw FanControlError.unsafeState("fan count mismatch during restore")
         }
+        let capturedTargets = try capturedTargetsByFanIndex(lease)
 
         for fan in snapshot.fans {
             try write(.target(fan: fan.index, bytes: FanEncoding.float32LittleEndian(fan.maximumRPM)), lease: lease, reason: "restore protective high target: \(reason)")
@@ -537,7 +537,16 @@ package final class FanController {
             guard targets[fan.index] == nil else {
                 throw FanControlError.restoreFailed("lease contains duplicate captured target for fan \(fan.index)")
             }
+            guard fan.targetRaw.count == 4,
+                  FanEncoding.floatValue(fan.targetRaw) != nil
+            else {
+                throw FanControlError.restoreFailed("lease contains invalid captured target for fan \(fan.index)")
+            }
             targets[fan.index] = fan.targetRaw
+        }
+        let expectedIndices = Set(0..<capability.fanCount)
+        guard Set(targets.keys) == expectedIndices else {
+            throw FanControlError.restoreFailed("lease captured fan indices do not match capability fan count")
         }
         return targets
     }

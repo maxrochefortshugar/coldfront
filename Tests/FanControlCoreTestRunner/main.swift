@@ -1302,6 +1302,100 @@ func testRestoreCorruptLeaseFailsClosedWithoutClearing() throws {
     try expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("current-lease.json").path), "corrupt lease restore should not clear lease")
 }
 
+func testRestoreLowFNumFailsClosedBeforeWritingOrClearingLease() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-low-fnum"))
+    let lease = try installBoostedLeaseState(smc: smc, store: store)
+    smc.setRawEntryBytes("FNum", [1])
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("restore should reject low FNum before writes", {
+        _ = try controller.restoreAuto(reason: "low fnum")
+    }, matching: { error in
+        guard case .unsafeState(let message) = error as? FanControlError else { return false }
+        return message.contains("fan count mismatch")
+    })
+
+    try expect(smc.writes.isEmpty, "low FNum restore should not write hardware")
+    try expect(try store.readIfPresent() == lease, "low FNum restore should not clear lease")
+}
+
+func testRestoreExtraCapturedFanFailsClosedBeforeWritingOrClearingLease() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-extra-captured-fan"))
+    let capturedFans = [
+        CapturedFanState(index: 0, modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(0)),
+        CapturedFanState(index: 1, modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(0)),
+        CapturedFanState(index: 2, modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(0))
+    ]
+    let lease = try installBoostedLeaseState(smc: smc, store: store, capturedFans: capturedFans)
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("restore should reject extra captured fan before writes", {
+        _ = try controller.restoreAuto(reason: "extra fan")
+    }, matching: { error in
+        guard case .restoreFailed(let message) = error as? FanControlError else { return false }
+        return message.contains("captured fan indices")
+    })
+
+    try expect(smc.writes.isEmpty, "extra captured fan restore should not write hardware")
+    try expect(try store.readIfPresent() == lease, "extra captured fan restore should not clear lease")
+}
+
+func testRestoreMissingCapturedFanFailsClosedBeforeWritingOrClearingLease() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-missing-captured-fan"))
+    let capturedFans = [
+        CapturedFanState(index: 0, modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(0))
+    ]
+    let lease = try installBoostedLeaseState(smc: smc, store: store, capturedFans: capturedFans)
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("restore should reject missing captured fan before writes", {
+        _ = try controller.restoreAuto(reason: "missing fan")
+    }, matching: { error in
+        guard case .restoreFailed(let message) = error as? FanControlError else { return false }
+        return message.contains("captured fan indices")
+    })
+
+    try expect(smc.writes.isEmpty, "missing captured fan restore should not write hardware")
+    try expect(try store.readIfPresent() == lease, "missing captured fan restore should not clear lease")
+}
+
+func testRestoreEmptyCapturedTargetFailsClosedBeforeWritingOrClearingLease() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-empty-captured-target"))
+    let lease = try installBoostedLeaseState(smc: smc, store: store, capturedTargetRaw: [])
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("restore should reject empty captured target before writes", {
+        _ = try controller.restoreAuto(reason: "empty target")
+    }, matching: { error in
+        guard case .restoreFailed(let message) = error as? FanControlError else { return false }
+        return message.contains("captured target")
+    })
+
+    try expect(smc.writes.isEmpty, "empty captured target restore should not write hardware")
+    try expect(try store.readIfPresent() == lease, "empty captured target restore should not clear lease")
+}
+
+func testRestoreNaNCapturedTargetFailsClosedBeforeWritingOrClearingLease() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-nan-captured-target"))
+    let lease = try installBoostedLeaseState(smc: smc, store: store, capturedTargetRaw: FanEncoding.float32LittleEndian(.nan))
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("restore should reject NaN captured target before writes", {
+        _ = try controller.restoreAuto(reason: "nan target")
+    }, matching: { error in
+        guard case .restoreFailed(let message) = error as? FanControlError else { return false }
+        return message.contains("captured target")
+    })
+
+    try expect(smc.writes.isEmpty, "NaN captured target restore should not write hardware")
+    try expect(try store.readIfPresent() == lease, "NaN captured target restore should not clear lease")
+}
+
 func testRestoreConvergesFromPartialRollbackState() throws {
     let smc = FakeSMC.mac165()
     let store = FanLeaseStore(directory: temporaryDirectory("restore-partial-rollback"))
@@ -1466,7 +1560,8 @@ func installBoostedLeaseState(
     store: FanLeaseStore,
     capabilityFingerprint: String = activeTestCapability().fingerprint,
     capturedTargetRaw: [UInt8] = FanEncoding.float32LittleEndian(0),
-    actualRPM: Float = 5_777
+    actualRPM: Float = 5_777,
+    capturedFans: [CapturedFanState]? = nil
 ) throws -> FanLease {
     let maxBytes = FanEncoding.float32LittleEndian(5_777)
     smc.setRawEntryBytes("Ftst", [activeTestCapability().unlockOn])
@@ -1478,7 +1573,7 @@ func installBoostedLeaseState(
     let lease = testLease(
         capabilityFingerprint: capabilityFingerprint,
         phase: .boosted,
-        capturedFans: (0..<activeTestCapability().fanCount).map {
+        capturedFans: capturedFans ?? (0..<activeTestCapability().fanCount).map {
             CapturedFanState(index: $0, modeRaw: [activeTestCapability().managedObservedState], targetRaw: capturedTargetRaw)
         }
     )
@@ -1668,6 +1763,11 @@ let tests: [(String, () throws -> Void)] = [
     ("Restore recovery mode requires lease", testRestoreRecoveryModeRequiresLease),
     ("Restore fingerprint mismatch does not write or clear lease", testRestoreFingerprintMismatchDoesNotWriteOrClearLease),
     ("Restore corrupt lease fails closed without clearing", testRestoreCorruptLeaseFailsClosedWithoutClearing),
+    ("Restore low FNum fails closed before writing or clearing lease", testRestoreLowFNumFailsClosedBeforeWritingOrClearingLease),
+    ("Restore extra captured fan fails closed before writing or clearing lease", testRestoreExtraCapturedFanFailsClosedBeforeWritingOrClearingLease),
+    ("Restore missing captured fan fails closed before writing or clearing lease", testRestoreMissingCapturedFanFailsClosedBeforeWritingOrClearingLease),
+    ("Restore empty captured target fails closed before writing or clearing lease", testRestoreEmptyCapturedTargetFailsClosedBeforeWritingOrClearingLease),
+    ("Restore NaN captured target fails closed before writing or clearing lease", testRestoreNaNCapturedTargetFailsClosedBeforeWritingOrClearingLease),
     ("Restore converges from partial rollback state", testRestoreConvergesFromPartialRollbackState),
     ("Restore audits rejected writes before throwing", testRestoreAuditsRejectedWritesBeforeThrowing)
 ]
