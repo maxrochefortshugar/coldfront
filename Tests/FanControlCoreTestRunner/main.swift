@@ -136,6 +136,104 @@ func testStatusReadsFanCountAndAvailability() throws {
     try expect(status.activeAvailability.reasons.contains("crash recovery unverified"), "availability should explain crash gate")
 }
 
+func testStatusMissingFtstKeepsStatusButBlocksActiveControl() throws {
+    let smc = FakeSMC.mac165()
+    smc.removeEntry("Ftst")
+    let capability = fullyValidatedCapability()
+    let controller = FanController(hardware: smc, capability: capability, clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.ftst == nil, "missing Ftst should be reported as unavailable")
+    try expect(status.activeAvailability.allowed == false, "missing Ftst should block active control")
+    try expect(status.activeAvailability.reasons == ["unlock status unavailable"], "missing Ftst should explain the unlock gate")
+}
+
+func testStatusInvalidFtstKeepsStatusButBlocksActiveControl() throws {
+    let smc = FakeSMC.mac165()
+    smc.setEntry("Ftst", type: "flt ", size: 1, bytes: [0])
+    let capability = fullyValidatedCapability()
+    let controller = FanController(hardware: smc, capability: capability, clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.ftst == nil, "invalid Ftst should be reported as unavailable")
+    try expect(status.activeAvailability.allowed == false, "invalid Ftst should block active control")
+    try expect(status.activeAvailability.reasons == ["unlock status unavailable"], "invalid Ftst should explain the unlock gate")
+}
+
+func testStatusAllRecoveryFlagsAndGoodHardwareAllowsActiveControl() throws {
+    let smc = FakeSMC.mac165()
+    let capability = fullyValidatedCapability()
+    let controller = FanController(hardware: smc, capability: capability, clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.activeAvailability.allowed, "fully validated good FakeSMC hardware should allow active control")
+    try expect(status.activeAvailability.reasons.isEmpty, "fully validated good FakeSMC hardware should not report availability reasons")
+}
+
+func testStatusReportsEveryNonRecoveryValidationGate() throws {
+    let smc = FakeSMC.mac165()
+    let capability = FanCapability.mac165ValidatedOneShot.withValidation(FanValidationState(
+        read: false,
+        boostMaxOneShot: false,
+        restoreAutoOneShot: false,
+        targetClearAfterNonManual: false,
+        crashRecovery: true,
+        parentDeathRecovery: true,
+        missedHeartbeatRecovery: true,
+        leaseExpiryRecovery: true,
+        signalRecovery: true,
+        sleepWakeRecovery: true
+    ))
+    let controller = FanController(hardware: smc, capability: capability, clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.activeAvailability.allowed == false, "non-recovery validation gates should block active control")
+    try expect(status.activeAvailability.reasons.contains("read validation unverified"), "read gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("boost max one-shot unverified"), "boost gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("restore auto one-shot unverified"), "restore gate should be explained")
+    try expect(status.activeAvailability.reasons.contains("target clear after non-manual unverified"), "target clear gate should be explained")
+}
+
+func testStatusRejectsWrongTargetType() throws {
+    try expectStatusInvalidReading("wrong target type should fail status", key: "F0Tg", reason: "expected flt size >= 4") {
+        $0.setEntry("F0Tg", type: "ui8 ", size: 4, bytes: FanEncoding.float32LittleEndian(2_000))
+    }
+}
+
+func testStatusRejectsWrongModeType() throws {
+    try expectStatusInvalidReading("wrong mode type should fail status", key: "F0Md", reason: "expected ui8 size >= 1") {
+        $0.setEntry("F0Md", type: "flt ", size: 1, bytes: [3])
+    }
+}
+
+func testStatusRejectsWrongFanCountType() throws {
+    try expectStatusInvalidReading("wrong FNum type should fail status", key: "FNum", reason: "expected ui8 size >= 1") {
+        $0.setEntry("FNum", type: "flt ", size: 1, bytes: [2])
+    }
+}
+
+func testStatusRejectsWrongPlatformType() throws {
+    try expectStatusInvalidReading("wrong RPlt type should fail status", key: "RPlt", reason: "expected ch8* ASCII bytes") {
+        $0.setEntry("RPlt", type: "ui8 ", size: 6, bytes: Array("j616c".utf8) + [0])
+    }
+}
+
+func testStatusReportsFanMinMaxOutOfBounds() throws {
+    let smc = FakeSMC.mac165()
+    smc.setEntry("F0Mx", type: "flt ", size: 4, bytes: FanEncoding.float32LittleEndian(20_000))
+    let capability = fullyValidatedCapability()
+    let controller = FanController(hardware: smc, capability: capability, clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.activeAvailability.allowed == false, "out-of-bounds fan min/max should block active control")
+    try expect(status.activeAvailability.reasons.contains("fan min/max out of bounds"), "out-of-bounds fan min/max reason should be included")
+}
+
 func testFakeSMCDelayedFtstReadback() throws {
     let smc = FakeSMC.mac165()
     let first = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "test unlock")
@@ -431,6 +529,33 @@ func settleManualMode(_ smc: FakeSMC, fan: Int) throws {
     smc.advanceTick()
 }
 
+func fullyValidatedCapability() -> FanCapability {
+    FanCapability.mac165ValidatedOneShot.withValidation(FanValidationState(
+        read: true,
+        boostMaxOneShot: true,
+        restoreAutoOneShot: true,
+        targetClearAfterNonManual: true,
+        crashRecovery: true,
+        parentDeathRecovery: true,
+        missedHeartbeatRecovery: true,
+        leaseExpiryRecovery: true,
+        signalRecovery: true,
+        sleepWakeRecovery: true
+    ))
+}
+
+func expectStatusInvalidReading(_ message: String, key: String, reason: String, mutate: (FakeSMC) -> Void) throws {
+    let smc = FakeSMC.mac165()
+    mutate(smc)
+    let controller = FanController(hardware: smc, capability: fullyValidatedCapability(), clock: TestClock())
+
+    try expectThrows(message, {
+        _ = try controller.status()
+    }, matching: { error in
+        error as? FanControlError == .invalidReading(key: key, reason: reason)
+    })
+}
+
 let tests: [(String, () throws -> Void)] = [
     ("Core boundary", testCoreBoundary),
     ("Mac16,5 capability", testMac165Capability),
@@ -444,6 +569,15 @@ let tests: [(String, () throws -> Void)] = [
     ("Resolver propagates missing Ftst", testResolverPropagatesMissingFtst),
     ("Resolver propagates unreadable Ftst", testResolverPropagatesUnreadableFtst),
     ("Status reads fan count and availability", testStatusReadsFanCountAndAvailability),
+    ("Status missing Ftst keeps status but blocks active control", testStatusMissingFtstKeepsStatusButBlocksActiveControl),
+    ("Status invalid Ftst keeps status but blocks active control", testStatusInvalidFtstKeepsStatusButBlocksActiveControl),
+    ("Status all recovery flags and good hardware allows active control", testStatusAllRecoveryFlagsAndGoodHardwareAllowsActiveControl),
+    ("Status reports every non-recovery validation gate", testStatusReportsEveryNonRecoveryValidationGate),
+    ("Status rejects wrong target type", testStatusRejectsWrongTargetType),
+    ("Status rejects wrong mode type", testStatusRejectsWrongModeType),
+    ("Status rejects wrong FNum type", testStatusRejectsWrongFanCountType),
+    ("Status rejects wrong RPlt type", testStatusRejectsWrongPlatformType),
+    ("Status reports fan min/max out of bounds", testStatusReportsFanMinMaxOutOfBounds),
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
     ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
     ("FakeSMC rejects manual without safe pre-manual target", testFakeSMCRejectsManualWithoutSafePreManualTarget),

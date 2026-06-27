@@ -15,7 +15,20 @@ package final class FanController {
         let fanCount = Int(try readUInt8(capability.fanCountKey))
         let platform = try readASCII(capability.platformKey)
         let fans = try (0..<fanCount).map { try readFan($0) }
-        let ftst = try? readUInt8(capability.unlockKey)
+        let ftst: UInt8?
+        let unlockStatusUnavailable: Bool
+        if capability.unlockAvailable {
+            do {
+                ftst = try readUInt8(capability.unlockKey)
+                unlockStatusUnavailable = false
+            } catch {
+                ftst = nil
+                unlockStatusUnavailable = true
+            }
+        } else {
+            ftst = nil
+            unlockStatusUnavailable = false
+        }
 
         return FanControlStatus(
             serviceName: hardware.serviceName,
@@ -23,14 +36,24 @@ package final class FanController {
             fanCount: fanCount,
             fans: fans,
             ftst: ftst,
-            activeAvailability: availability(fanCount: fanCount, platform: platform, fans: fans)
+            activeAvailability: availability(
+                fanCount: fanCount,
+                platform: platform,
+                fans: fans,
+                unlockStatusUnavailable: unlockStatusUnavailable
+            )
         )
     }
 
-    private func availability(fanCount: Int, platform: String, fans: [FanStatus]) -> ActiveAvailability {
+    private func availability(fanCount: Int, platform: String, fans: [FanStatus], unlockStatusUnavailable: Bool) -> ActiveAvailability {
         var reasons: [String] = []
         if platform != capability.platform { reasons.append("platform mismatch") }
         if fanCount != capability.fanCount { reasons.append("fan count mismatch") }
+        if unlockStatusUnavailable { reasons.append("unlock status unavailable") }
+        if !capability.validation.read { reasons.append("read validation unverified") }
+        if !capability.validation.boostMaxOneShot { reasons.append("boost max one-shot unverified") }
+        if !capability.validation.restoreAutoOneShot { reasons.append("restore auto one-shot unverified") }
+        if !capability.validation.targetClearAfterNonManual { reasons.append("target clear after non-manual unverified") }
         if !capability.validation.crashRecovery { reasons.append("crash recovery unverified") }
         if !capability.validation.parentDeathRecovery { reasons.append("parent-death recovery unverified") }
         if !capability.validation.missedHeartbeatRecovery { reasons.append("missed-heartbeat recovery unverified") }
@@ -47,45 +70,64 @@ package final class FanController {
         let actual = try readFloat(capability.actualKey(for: index))
         let minimum = try readFloat(capability.minimumKey(for: index))
         let maximum = try readFloat(capability.maximumKey(for: index))
-        let target = try hardware.read(capability.targetKey(for: index))
-        let mode = try hardware.read(capability.modeKey(for: index))
-
-        guard let targetRPM = FanEncoding.floatValue(target.bytes), let modeByte = mode.bytes.first else {
-            throw FanControlError.invalidReading(key: "fan \(index)", reason: "missing target or mode")
-        }
+        let targetKey = try capability.targetKey(for: index)
+        let modeKey = try capability.modeKey(for: index)
+        let target = try readFloatReading(targetKey)
+        let mode = try readUInt8Reading(modeKey)
 
         return FanStatus(
             index: index,
             actualRPM: actual,
             minimumRPM: minimum,
             maximumRPM: maximum,
-            targetRPM: targetRPM,
-            targetRaw: target.bytes,
-            mode: modeByte,
-            modeRaw: mode.bytes
+            targetRPM: target.value,
+            targetRaw: target.reading.bytes,
+            mode: mode.value,
+            modeRaw: mode.reading.bytes
         )
     }
 
     private func readFloat(_ key: FanKey) throws -> Float {
+        try readFloatReading(key).value
+    }
+
+    private func readFloatReading(_ key: FanKey) throws -> (reading: FanReading, value: Float) {
         let reading = try hardware.read(key)
-        guard reading.type == "flt ", let value = FanEncoding.floatValue(reading.bytes) else {
-            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected flt")
+        guard reading.type == "flt ",
+              reading.size >= 4,
+              reading.bytes.count >= 4,
+              let value = FanEncoding.floatValue(reading.bytes)
+        else {
+            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected flt size >= 4")
         }
-        return value
+        return (reading, value)
     }
 
     private func readUInt8(_ key: FanKey) throws -> UInt8 {
+        try readUInt8Reading(key).value
+    }
+
+    private func readUInt8Reading(_ key: FanKey) throws -> (reading: FanReading, value: UInt8) {
         let reading = try hardware.read(key)
-        guard let value = reading.bytes.first else {
-            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected ui8")
+        guard reading.type == "ui8 ",
+              reading.size >= 1,
+              let value = reading.bytes.first
+        else {
+            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected ui8 size >= 1")
         }
-        return value
+        return (reading, value)
     }
 
     private func readASCII(_ key: FanKey) throws -> String {
         let reading = try hardware.read(key)
-        guard let value = String(bytes: reading.bytes.prefix { $0 != 0 }, encoding: .ascii) else {
-            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected ASCII")
+        let bytes = Array(reading.bytes.prefix(Int(reading.size)))
+        guard reading.type == "ch8*",
+              reading.size >= 1,
+              !bytes.isEmpty,
+              let value = String(bytes: bytes.prefix { $0 != 0 }, encoding: .ascii),
+              !value.isEmpty
+        else {
+            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected ch8* ASCII bytes")
         }
         return value
     }

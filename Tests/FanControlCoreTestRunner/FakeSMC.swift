@@ -81,6 +81,14 @@ final class FakeSMC: FanHardware {
         }
     }
 
+    func setEntry(_ key: String, type: String, size: UInt32, bytes: [UInt8]) {
+        entries[key] = Entry(type: type, size: size, attributes: 0, bytes: bytes)
+    }
+
+    func removeEntry(_ key: String) {
+        entries.removeValue(forKey: key)
+    }
+
     func rawEntryBytes(_ key: String) -> [UInt8]? {
         entries[key]?.bytes
     }
