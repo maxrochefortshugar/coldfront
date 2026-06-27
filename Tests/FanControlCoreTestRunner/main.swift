@@ -101,6 +101,66 @@ func repositoryFileURL(_ path: String) throws -> URL {
     throw TestFailure(description: "missing repository file \(path)")
 }
 
+func repositoryRootURL() throws -> URL {
+    try repositoryFileURL("Package.swift").deletingLastPathComponent()
+}
+
+struct ProcessResult {
+    let exitCode: Int32
+    let stdout: String
+    let stderr: String
+}
+
+func runControlExecutable(_ arguments: [String]) throws -> ProcessResult {
+    let executableURL = try controlExecutableURL()
+    return try runProcess(
+        executableURL: executableURL,
+        arguments: arguments,
+        currentDirectoryURL: try repositoryRootURL()
+    )
+}
+
+func controlExecutableURL() throws -> URL {
+    let repoRoot = try repositoryRootURL()
+    let buildResult = try runProcess(
+        executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["swift", "build", "--product", "mlx-chill-control"],
+        currentDirectoryURL: repoRoot
+    )
+
+    guard buildResult.exitCode == 0 else {
+        throw TestFailure(description: "failed to build mlx-chill-control: \(buildResult.stderr)\(buildResult.stdout)")
+    }
+
+    let executableURL = repoRoot.appendingPathComponent(".build/debug/mlx-chill-control")
+    guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
+        throw TestFailure(description: "missing built mlx-chill-control executable at \(executableURL.path)")
+    }
+
+    return executableURL
+}
+
+func runProcess(executableURL: URL, arguments: [String], currentDirectoryURL: URL) throws -> ProcessResult {
+    let process = Process()
+    process.executableURL = executableURL
+    process.arguments = arguments
+    process.currentDirectoryURL = currentDirectoryURL
+
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    try process.run()
+    process.waitUntilExit()
+
+    return ProcessResult(
+        exitCode: process.terminationStatus,
+        stdout: String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+        stderr: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    )
+}
+
 func testControlExecutableRoutesDisabledGateThroughCommandContract() throws {
     let source = try repositorySourceText("Sources/mlx-chill-control/main.swift")
 
@@ -157,6 +217,51 @@ func testDisabledStatusJSONResponseIsParseable() throws {
         object?["message"] as? String == "active fan control is disabled for Mac16,5",
         "status JSON should include the disabled active-control message"
     )
+}
+
+func testControlExecutableDisabledBoostExitsBeforeFanControl() throws {
+    let result = try runControlExecutable([
+        "boost", "max", "--for", "10m", "--i-understand-active-fan-control"
+    ])
+
+    try expect(result.exitCode == 1, "disabled executable boost max should exit 1")
+    try expect(
+        result.stdout == "active fan control is disabled for Mac16,5\n",
+        "disabled executable boost max should print disabled message"
+    )
+}
+
+func testControlExecutableDisabledRunDoesNotStartWorkload() throws {
+    let marker = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-chill-control-disabled-\(UUID().uuidString)")
+    try? FileManager.default.removeItem(at: marker)
+    defer { try? FileManager.default.removeItem(at: marker) }
+
+    let result = try runControlExecutable([
+        "run", "--boost", "max", "--for", "10m", "--i-understand-active-fan-control",
+        "--", "/bin/sh", "-c", "touch \(marker.path)"
+    ])
+
+    try expect(result.exitCode == 1, "disabled executable run --boost max should exit 1")
+    try expect(
+        result.stdout == "active fan control is disabled for Mac16,5\n",
+        "disabled executable run --boost max should print disabled message"
+    )
+    try expect(
+        !FileManager.default.fileExists(atPath: marker.path),
+        "disabled executable run --boost max should not start workload"
+    )
+}
+
+func testControlExecutableStatusJSONReportsDisabledFlags() throws {
+    let result = try runControlExecutable(["status", "--json"])
+
+    try expect(result.exitCode == 0, "executable status --json should exit zero")
+    let object = try JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any]
+    try expect(object?["model"] as? String == "Mac16,5", "executable status JSON should include model")
+    try expect(object?["activeControlEnabled"] as? Bool == false, "executable status JSON should disable active control")
+    try expect(object?["boostExecutionEnabled"] as? Bool == false, "executable status JSON should disable boost execution")
+    try expect(object?["recoveryExecutionEnabled"] as? Bool == false, "executable status JSON should disable recovery execution")
 }
 
 func testReadmeDocumentsAutoLeaseInspectionOnly() throws {
@@ -2003,6 +2108,9 @@ let tests: [(String, () throws -> Void)] = [
     ("Control executable routes disabled gate through command contract", testControlExecutableRoutesDisabledGateThroughCommandContract),
     ("Disabled active-control response fails boost commands", testDisabledActiveControlResponseFailsBoostCommands),
     ("Disabled status JSON response is parseable", testDisabledStatusJSONResponseIsParseable),
+    ("Control executable disabled boost exits before fan control", testControlExecutableDisabledBoostExitsBeforeFanControl),
+    ("Control executable disabled run does not start workload", testControlExecutableDisabledRunDoesNotStartWorkload),
+    ("Control executable status JSON reports disabled flags", testControlExecutableStatusJSONReportsDisabledFlags),
     ("README documents auto lease inspection only", testReadmeDocumentsAutoLeaseInspectionOnly),
     ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
     ("CLI parses status JSON", testCLIParsesStatusJSON),
