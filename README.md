@@ -14,10 +14,10 @@ control when the work is done.
 ## Status
 
 - macOS only
-- Apple Silicon tested on `Mac16,5` / M4 Max
+- Apple Silicon tested on `Mac16,5` / M4 Max and `Mac17,7` / M5 Max
 - read-only SMC telemetry by default
 - bounded 10-second hardware validation command
-- manual max boost and auto restore on validated `Mac16,5` hardware
+- manual max boost and auto restore on allowlisted Apple Silicon hardware
 - no workload wrapper yet
 - no background daemon
 - no sudo requirement for telemetry reads
@@ -38,10 +38,10 @@ swift build -c release
 .build/release/coldfront
 ```
 
-Read explicit SMC keys:
+Read explicit SMC keys. M4 models use `F{n}Md`; M5 models use `F{n}md`:
 
 ```sh
-.build/release/coldfront read FNum F0Ac F0Mn F0Mx F0Tg
+.build/release/coldfront read FNum F0Ac F0Mn F0Mx F0Tg F0md RPlt
 ```
 
 Check the guarded active-control status:

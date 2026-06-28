@@ -124,7 +124,39 @@ public struct FanCapability: Equatable, Sendable {
         )
     )
 
-    public static let allowlist = [mac165ValidatedOneShot]
+    public static let mac177M5MaxLowercaseMode = FanCapability(
+        model: "Mac17,7",
+        platform: "j714c",
+        fanCount: 2,
+        modeKeyFormat: "F%dmd",
+        unlockAvailable: false,
+        manualCommand: 1,
+        releaseCommand: 0,
+        managedObservedState: 0,
+        unlockOn: 0,
+        unlockOff: 0,
+        maxRPMCeiling: 10_000,
+        preManualMinimumMultiplier: 0.95,
+        boostVerificationMultiplier: 0.85,
+        defaultLeaseSeconds: 600,
+        maxLeaseSeconds: 7_200,
+        heartbeatSeconds: 2,
+        missedHeartbeatRestoreSeconds: 15,
+        validation: FanValidationState(
+            read: true,
+            boostMaxOneShot: true,
+            restoreAutoOneShot: true,
+            targetClearAfterNonManual: true,
+            crashRecovery: false,
+            parentDeathRecovery: false,
+            missedHeartbeatRecovery: false,
+            leaseExpiryRecovery: false,
+            signalRecovery: false,
+            sleepWakeRecovery: false
+        )
+    )
+
+    public static let allowlist = [mac165ValidatedOneShot, mac177M5MaxLowercaseMode]
 
     public func key(_ format: String, fan index: Int) throws -> FanKey {
         try FanKey(String(format: format, index))

@@ -1,6 +1,6 @@
 # Native Fan Control Spec
 
-Status: implemented for manual `boost` / `auto` on `Mac16,5`
+Status: implemented for manual `boost` / `auto` on `Mac16,5` and `Mac17,7`
 Date: 2026-06-27
 Updated: 2026-06-28
 
@@ -10,7 +10,7 @@ Coldfront provides one macOS CLI:
 
 ```sh
 coldfront
-coldfront read FNum F0Ac F0Tg F0Md Ftst
+coldfront read FNum F0Ac F0Tg F0Md F0md Ftst
 coldfront status --json
 coldfront validate --for 10s -y
 coldfront boost --for 10m -y
@@ -46,7 +46,7 @@ Known service names:
 
 | Service | Notes |
 | --- | --- |
-| `AppleSMCKeysEndpoint` | Observed on local `Mac16,5` M4 Max. |
+| `AppleSMCKeysEndpoint` | Observed on local Apple Silicon MacBook Pro hardware. |
 | `AppleSMC` | Older AppleSMC tools use this name. |
 
 IOKit command constants:
@@ -74,7 +74,7 @@ No public raw SMC write API is exposed.
 
 All keys are four ASCII bytes.
 
-| Key | Type on M4 Max | Direction | Required | Meaning |
+| Key | Type on Apple Silicon | Direction | Required | Meaning |
 | --- | --- | --- | --- | --- |
 | `FNum` | `ui8 ` | read | yes | Fan count. |
 | `F{n}Ac` | `flt ` | read | yes | Fan `n` actual RPM. |
@@ -82,8 +82,8 @@ All keys are four ASCII bytes.
 | `F{n}Mx` | `flt ` | read | yes | Fan `n` maximum RPM. |
 | `F{n}Tg` | `flt ` | read/write | yes | Fan `n` target RPM. |
 | `F{n}Md` | `ui8 ` | read/write | M1-M4 | Fan `n` mode, uppercase key. |
-| `F{n}md` | `ui8 ` | read/write | future | Fan `n` mode, lowercase key. Not enabled until validated. |
-| `Ftst` | `ui8 ` | read/write | M1-M4 if present | Fan/test unlock. |
+| `F{n}md` | `ui8 ` | read/write | M5 | Fan `n` mode, lowercase key. |
+| `Ftst` | `ui8 ` | read/write | M1-M4 if present | Fan/test unlock. Not present on the `Mac17,7` M5 path. |
 | `RPlt` | `ch8*` | read | yes | Platform identifier. |
 | `#KEY` | `ui32` or raw | read | optional | SMC key count. |
 
@@ -101,6 +101,14 @@ Validated byte values on `Mac16,5`:
 These mode and unlock fields are byte values, not bit masks. The legacy `FS! `
 forced-mode bitmask is not required and was unavailable on local `Mac16,5`.
 Coldfront does not write `FS! `.
+
+Mode values on `Mac17,7`:
+
+| Register | Value | Meaning |
+| --- | ---: | --- |
+| `F{n}md` | `0` | Apple/system-managed state observed before boost. |
+| `F{n}md` | `1` | Manual fan mode command used by Coldfront. |
+| `F{n}Tg` | `0.0` | Target clear value observed before boost. |
 
 ## Encoding
 
@@ -153,23 +161,45 @@ Manual validation reached:
 
 After restore, hardware settled to `F0Md/F1Md=3`, `F0Tg/F1Tg=0`, and `Ftst=0`.
 
+Observed on `Mac17,7` / M5 Max / platform `j714c`:
+
+```sh
+.build/release/coldfront read FNum F0Ac F0Mn F0Mx F0Tg F1Ac F1Mn F1Mx F1Tg F0md F1md Ftst RPlt
+```
+
+| Key | Value | Raw |
+| --- | ---: | --- |
+| `FNum` | `2` | `0x02` |
+| `F0Ac` | `0` | `0x00000000` |
+| `F0Mn` | `2317` | `0x00D01045` |
+| `F0Mx` | `7826` | `0x0090F445` |
+| `F0Tg` | `0` | `0x00000000` |
+| `F1Ac` | `0` | `0x00000000` |
+| `F1Mn` | `2317` | `0x00D01045` |
+| `F1Mx` | `7826` | `0x0090F445` |
+| `F1Tg` | `0` | `0x00000000` |
+| `F0md` | `0` | `0x00` |
+| `F1md` | `0` | `0x00` |
+| `Ftst` | unavailable | unavailable |
+| `RPlt` | `j714c` | `0x6A37313463000000` |
+
 ## Command Flows
 
 `status --json`:
 
 1. Resolve model and platform.
-2. Read fan count, fan min/max/current/target/mode, and `Ftst`.
+2. Read fan count, fan min/max/current/target/mode, and `Ftst` when the capability uses an unlock key.
 3. Report whether the current executable enables active control on this host.
 
 `boost --for <duration> -y`:
 
 1. Resolve allowlisted model/platform.
 2. Refuse unsupported hardware or invalid fan inventory.
-3. Refuse if any fan is already manual or `Ftst` is already unlocked.
+3. Refuse if any fan is already manual or, for unlock-key models, `Ftst` is already unlocked.
 4. Create a lease containing captured raw mode and target bytes.
-5. Write `Ftst=1` and poll readback.
+5. Write `Ftst=1` and poll readback when the capability uses an unlock key.
 6. Write max target as a pre-manual guard.
-7. Write `F{n}Md=1` with retry for transient `0x82` rejections.
+7. Write the allowlisted mode key to `1` with retry for transient `0x82` rejections.
 8. Write `F{n}Tg=F{n}Mx` after manual readback.
 9. Poll actual RPM until every fan reaches at least `0.85 * maxRPM`.
 10. Leave fans boosted until explicit `coldfront auto`.
@@ -179,7 +209,7 @@ After restore, hardware settled to `F0Md/F1Md=3`, `F0Tg/F1Tg=0`, and `Ftst=0`.
 1. Read the current lease.
 2. Write protective high targets.
 3. Write mode release command `0`.
-4. Write `Ftst=0` and poll readback.
+4. Write `Ftst=0` and poll readback when the capability uses an unlock key.
 5. Wait for non-manual and managed mode.
 6. Restore captured target bytes.
 7. Clear the lease only after managed mode and target settle.
@@ -221,7 +251,7 @@ invokes it yet.
 - Fan count must match the capability.
 - Fan minimum and maximum RPM must be sane: `Mn > 0`, `Mx > Mn`, `Mx <= 10000`.
 - Target and mode key type/size must match the validated shape.
-- Lowercase mode keys are treated as unsupported until validated.
+- Mode key case must match the allowlisted capability.
 - Do not expose arbitrary SMC writes.
 - Do not write keys outside `Ftst`, `F{n}Md` / `F{n}md`, and `F{n}Tg`.
 - Do not clear target to zero while a fan is manual.
@@ -231,8 +261,7 @@ invokes it yet.
 
 ## Current Limitations
 
-- Only `Mac16,5` / `j616c` is allowlisted.
-- No M5/lowercase mode-key path is enabled.
+- Only `Mac16,5` / `j616c` and `Mac17,7` / `j714c` are allowlisted.
 - No custom RPM mode.
 - No workload wrapper.
 - No menu-bar app.

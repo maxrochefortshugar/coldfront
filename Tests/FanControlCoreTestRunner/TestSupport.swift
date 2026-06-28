@@ -89,6 +89,25 @@ func fakeFanInventory(overrides: [String: FanReading] = [:], failures: [String: 
     return FakeFanReader(readings: readings, failures: failures)
 }
 
+func fakeMac177FanInventory(overrides: [String: FanReading] = [:], failures: [String: Error] = [:]) throws -> FakeFanReader {
+    var readings: [String: FanReading] = [
+        "RPlt": try fakePlatformReading("j714c"),
+        "FNum": try fakeReading("FNum", bytes: [2]),
+        "F0md": try fakeReading("F0md", bytes: [0]),
+        "F1md": try fakeReading("F1md", bytes: [0]),
+        "F0Ac": try fakeReading("F0Ac", bytes: [0, 0, 0, 0], type: "flt "),
+        "F1Ac": try fakeReading("F1Ac", bytes: [0, 0, 0, 0], type: "flt "),
+        "F0Mn": try fakeReading("F0Mn", bytes: [0, 0, 0, 0], type: "flt "),
+        "F1Mn": try fakeReading("F1Mn", bytes: [0, 0, 0, 0], type: "flt "),
+        "F0Mx": try fakeReading("F0Mx", bytes: [0, 0, 0, 0], type: "flt "),
+        "F1Mx": try fakeReading("F1Mx", bytes: [0, 0, 0, 0], type: "flt "),
+        "F0Tg": try fakeReading("F0Tg", bytes: [0, 0, 0, 0], type: "flt "),
+        "F1Tg": try fakeReading("F1Tg", bytes: [0, 0, 0, 0], type: "flt ")
+    ]
+    readings.merge(overrides) { _, new in new }
+    return FakeFanReader(readings: readings, failures: failures)
+}
+
 final class TestClock: FanControlClock {
     var nowUnix: TimeInterval
     private let onSleep: (() -> Void)?

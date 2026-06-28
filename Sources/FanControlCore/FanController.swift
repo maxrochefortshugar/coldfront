@@ -136,7 +136,9 @@ package final class FanController {
                 try pollUnlock(value: capability.unlockOn)
             }
             try requestTargetsToMax(snapshot, lease: lease, reason: "boost pre-manual target: \(reason)", write: writePrimary)
-            try waitForSafePreManualTargets(snapshot)
+            if capability.unlockAvailable {
+                try waitForSafePreManualTargets(snapshot)
+            }
             try writeManualModes(snapshot, lease: lease, reason: "boost manual mode: \(reason)", write: writePrimary)
             try pollManualModes(snapshot)
             try requestTargetsToMax(snapshot, lease: lease, reason: "boost max target: \(reason)", write: writePrimary)
