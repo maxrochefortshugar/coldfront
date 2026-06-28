@@ -2,7 +2,6 @@ public enum FanControlCommand: Equatable, Sendable {
     case statusJSON
     case boostMax(durationSeconds: Int, acknowledgedRisk: Bool)
     case auto
-    case runBoostMax(durationSeconds: Int, workload: [String], acknowledgedRisk: Bool)
     case validateOneShot(durationSeconds: Int, acknowledgedRisk: Bool)
 
     public static func parse(_ args: [String], maxDurationSeconds: Int = 7_200) throws -> FanControlCommand {
@@ -26,25 +25,6 @@ public enum FanControlCommand: Equatable, Sendable {
         case "boost":
             let options = try parseBoostOptions(Array(args.dropFirst()), maxDurationSeconds: maxDurationSeconds)
             return .boostMax(durationSeconds: options.durationSeconds, acknowledgedRisk: options.acknowledgedRisk)
-
-        case "run":
-            guard args.count >= 2, args[1] == "--boost" else {
-                throw FanControlCommandParseError.usage("expected: run --boost [--for duration] --i-understand-active-fan-control -- <workload...>")
-            }
-            guard let delimiterIndex = args.dropFirst(2).firstIndex(of: "--") else {
-                throw FanControlCommandParseError.missingRunDelimiter
-            }
-            let controlArgs = Array(args[2..<delimiterIndex])
-            let workload = Array(args[(delimiterIndex + 1)...])
-            guard !workload.isEmpty else {
-                throw FanControlCommandParseError.emptyWorkload
-            }
-            let options = try parseBoostOptions(controlArgs, maxDurationSeconds: maxDurationSeconds)
-            return .runBoostMax(
-                durationSeconds: options.durationSeconds,
-                workload: workload,
-                acknowledgedRisk: options.acknowledgedRisk
-            )
 
         case "validate":
             let options = try parseBoostOptions(
@@ -71,7 +51,7 @@ public enum FanControlCommand: Equatable, Sendable {
 
         while index < args.count {
             switch args[index] {
-            case "--i-understand-active-fan-control":
+            case "-y", "--yes":
                 acknowledgedRisk = true
                 index += 1
 
@@ -136,8 +116,6 @@ public enum FanControlCommandParseError: Error, Equatable, Sendable, CustomStrin
     case missingDurationValue
     case invalidDuration(String)
     case durationOutOfBounds(seconds: Int, maxSeconds: Int)
-    case missingRunDelimiter
-    case emptyWorkload
     case unknownArgument(String)
 
     public var description: String {
@@ -145,17 +123,13 @@ public enum FanControlCommandParseError: Error, Equatable, Sendable, CustomStrin
         case .usage(let message):
             return "usage error: \(message)"
         case .missingAcknowledgement:
-            return "missing required acknowledgement: --i-understand-active-fan-control"
+            return "missing required acknowledgement: -y or --yes"
         case .missingDurationValue:
             return "missing duration after --for"
         case .invalidDuration(let value):
             return "invalid duration: \(value) (expected a positive integer ending in s or m)"
         case .durationOutOfBounds(let seconds, let maxSeconds):
             return "duration \(seconds)s exceeds maximum \(maxSeconds)s"
-        case .missingRunDelimiter:
-            return "missing run workload delimiter: --"
-        case .emptyWorkload:
-            return "run workload must not be empty"
         case .unknownArgument(let argument):
             return "unknown argument: \(argument)"
         }

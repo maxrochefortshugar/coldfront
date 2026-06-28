@@ -170,42 +170,35 @@ func runProcess(executableURL: URL, arguments: [String], currentDirectoryURL: UR
     )
 }
 
-func testColdfrontExecutableRoutesDisabledGateThroughCommandContract() throws {
+func testColdfrontExecutableNoLongerRoutesBoostThroughDisabledGate() throws {
     let source = try repositorySourceText("Sources/coldfront/main.swift")
 
-    try expect(
-        source.contains("FanControlCommandContract.disabledActiveControlResponse"),
-        "coldfront should route disabled active-control output through the command contract"
-    )
+    try expect(!source.contains("case .runBoostMax"), "coldfront should not retain run --boost handling")
+    try expect(!source.contains("FanControlCommandContract.disabledActiveControlResponse"), "coldfront boost should not route through disabled active-control output")
 }
 
-func testDisabledActiveControlResponseFailsBoostCommands() throws {
+func testColdfrontExecutableDispatchesBoostAndAutoToController() throws {
+    let source = try repositorySourceText("Sources/coldfront/main.swift")
+
+    try expect(source.contains("try runBoost(durationSeconds: durationSeconds)"), "coldfront boost should dispatch to active boost implementation")
+    try expect(source.contains("try runAutoRestore()"), "coldfront auto should dispatch to active restore implementation")
+    try expect(!source.contains("case .runBoostMax"), "coldfront should not expose run --boost")
+}
+
+func testActiveControlResponseFailsBoostCommandWhenExplicitlyDisabled() throws {
     let boost = try FanControlCommand.parse([
-        "boost", "--for", "10m", "--i-understand-active-fan-control"
-    ])
-    let run = try FanControlCommand.parse([
-        "run", "--boost", "--for", "10m", "--i-understand-active-fan-control",
-        "--", "/usr/bin/true"
+        "boost", "--for", "10m", "-y"
     ])
 
     let boostResponse = try FanControlCommandContract.disabledActiveControlResponse(
         for: boost,
         capability: .mac165ValidatedOneShot
     )
-    let runResponse = try FanControlCommandContract.disabledActiveControlResponse(
-        for: run,
-        capability: .mac165ValidatedOneShot
-    )
 
     try expect(boostResponse.exitCode == 1, "disabled boost should exit nonzero")
-    try expect(runResponse.exitCode == 1, "disabled run --boost should exit nonzero")
     try expect(
         boostResponse.stdout == "active fan control is disabled for Mac16,5\n",
         "disabled boost should print the disabled active-control message"
-    )
-    try expect(
-        runResponse.stdout == "active fan control is disabled for Mac16,5\n",
-        "disabled run --boost should print the disabled active-control message"
     )
 }
 
@@ -228,52 +221,18 @@ func testDisabledStatusJSONResponseIsParseable() throws {
     )
 }
 
-func testControlExecutableDisabledBoostExitsBeforeFanControl() throws {
-    let result = try runColdfrontExecutable([
-        "boost", "--for", "10m", "--i-understand-active-fan-control"
-    ])
-
-    try expect(result.exitCode == 1, "disabled executable boost should exit 1")
-    try expect(
-        result.stdout == "active fan control is disabled for Mac16,5\n",
-        "disabled executable boost should print disabled message"
-    )
-}
-
-func testControlExecutableDisabledRunDoesNotStartWorkload() throws {
-    let marker = FileManager.default.temporaryDirectory
-        .appendingPathComponent("coldfront-disabled-\(UUID().uuidString)")
-    try? FileManager.default.removeItem(at: marker)
-    defer { try? FileManager.default.removeItem(at: marker) }
-
-    let result = try runColdfrontExecutable([
-        "run", "--boost", "--for", "10m", "--i-understand-active-fan-control",
-        "--", "/bin/sh", "-c", "touch \(marker.path)"
-    ])
-
-    try expect(result.exitCode == 1, "disabled executable run --boost should exit 1")
-    try expect(
-        result.stdout == "active fan control is disabled for Mac16,5\n",
-        "disabled executable run --boost should print disabled message"
-    )
-    try expect(
-        !FileManager.default.fileExists(atPath: marker.path),
-        "disabled executable run --boost should not start workload"
-    )
-}
-
 func testControlExecutableStatusJSONReportsDisabledFlags() throws {
     let result = try runColdfrontExecutable(["status", "--json"])
 
     try expect(result.exitCode == 0, "executable status --json should exit zero")
     let object = try JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any]
     try expect(object?["model"] as? String == "Mac16,5", "executable status JSON should include model")
-    try expect(object?["activeControlEnabled"] as? Bool == false, "executable status JSON should disable active control")
-    try expect(object?["boostExecutionEnabled"] as? Bool == false, "executable status JSON should disable boost execution")
-    try expect(object?["recoveryExecutionEnabled"] as? Bool == false, "executable status JSON should disable recovery execution")
+    try expect(object?["activeControlEnabled"] as? Bool == true, "executable status JSON should enable active control for validated hardware")
+    try expect(object?["boostExecutionEnabled"] as? Bool == true, "executable status JSON should enable boost execution")
+    try expect(object?["recoveryExecutionEnabled"] as? Bool == true, "executable status JSON should enable recovery execution")
 }
 
-func testReadmeDocumentsAutoLeaseInspectionOnly() throws {
+func testReadmeDocumentsBoostAndAutoCommands() throws {
     let source = try repositorySourceText("README.md")
     let normalizedSource = source.replacingOccurrences(
         of: "\\s+",
@@ -282,18 +241,18 @@ func testReadmeDocumentsAutoLeaseInspectionOnly() throws {
     )
 
     try expect(
-        normalizedSource.contains("`auto` currently performs lease inspection only"),
-        "README should say auto currently performs lease inspection only"
+        normalizedSource.contains("sudo .build/release/coldfront boost --for 10m -y"),
+        "README should document the active boost command"
     )
     try expect(
-        normalizedSource.contains("recovery writes remain disabled until validation completes"),
-        "README should say recovery writes remain disabled until validation completes"
+        normalizedSource.contains("sudo .build/release/coldfront auto"),
+        "README should document the active auto restore command"
     )
 }
 
 func testCLIParsesBoundedBoostDuration() throws {
-    let command = try FanControlCommand.parse(["boost", "--for", "10m", "--i-understand-active-fan-control"])
-    let maxCommand = try FanControlCommand.parse(["boost", "--for", "120m", "--i-understand-active-fan-control"])
+    let command = try FanControlCommand.parse(["boost", "--for", "10m", "-y"])
+    let maxCommand = try FanControlCommand.parse(["boost", "--for", "120m", "--yes"])
 
     try expect(
         command == .boostMax(durationSeconds: 600, acknowledgedRisk: true),
@@ -319,7 +278,7 @@ func testCLIParsesAuto() throws {
 
 func testCLIParsesTenSecondValidationOneShot() throws {
     let command = try FanControlCommand.parse([
-        "validate", "--for", "10s", "--i-understand-active-fan-control"
+        "validate", "--for", "10s", "-y"
     ])
 
     try expect(
@@ -331,7 +290,7 @@ func testCLIParsesTenSecondValidationOneShot() throws {
 func testCLIRejectsValidationOneShotOverTenSeconds() throws {
     try expectThrows("validation should reject durations above ten seconds", {
         _ = try FanControlCommand.parse([
-            "validate", "--for", "11s", "--i-understand-active-fan-control"
+            "validate", "--for", "11s", "-y"
         ])
     }, matching: { error in
         error as? FanControlCommandParseError == .durationOutOfBounds(seconds: 11, maxSeconds: 10)
@@ -339,7 +298,7 @@ func testCLIRejectsValidationOneShotOverTenSeconds() throws {
 }
 
 func testCLIUsesDefaultBoostDuration() throws {
-    let command = try FanControlCommand.parse(["boost", "--i-understand-active-fan-control"])
+    let command = try FanControlCommand.parse(["boost", "-y"])
 
     try expect(
         command == .boostMax(durationSeconds: 600, acknowledgedRisk: true),
@@ -351,86 +310,46 @@ func testCLIRejectsMissingAcknowledgement() throws {
     try expectThrows("boost should reject missing acknowledgement", {
         _ = try FanControlCommand.parse(["boost", "--for", "10m"])
     }, matching: { _ in true })
-
-    try expectThrows("run should reject acknowledgement after workload delimiter", {
-        _ = try FanControlCommand.parse([
-            "run", "--boost", "--for", "10m",
-            "--", "--i-understand-active-fan-control", "python", "script.py"
-        ])
+    try expectThrows("old long acknowledgement should be removed", {
+        _ = try FanControlCommand.parse(["boost", "--for", "10m", "--i-understand-active-fan-control"])
     }, matching: { error in
-        error as? FanControlCommandParseError == .missingAcknowledgement
+        error as? FanControlCommandParseError == .unknownArgument("--i-understand-active-fan-control")
     })
 }
 
 func testCLIRejectsLeaseOverTwoHours() throws {
     try expectThrows("boost should reject duration above two hours", {
-        _ = try FanControlCommand.parse(["boost", "--for", "121m", "--i-understand-active-fan-control"])
+        _ = try FanControlCommand.parse(["boost", "--for", "121m", "-y"])
     }, matching: { _ in true })
 }
 
-func testCLIRunParsesWorkloadAndDuration() throws {
-    let command = try FanControlCommand.parse([
-        "run", "--boost", "--for", "1s", "--i-understand-active-fan-control",
-        "--", "echo", "hello"
-    ])
-
-    try expect(
-        command == .runBoostMax(durationSeconds: 1, workload: ["echo", "hello"], acknowledgedRisk: true),
-        "run --boost should parse control duration and workload"
-    )
-}
-
-func testCLIRunIgnoresWorkloadFlagsAfterDelimiter() throws {
-    let command = try FanControlCommand.parse([
-        "run", "--boost", "--for", "1s", "--i-understand-active-fan-control",
-        "--", "worker", "--for", "121m", "--not-a-control-flag"
-    ])
-
-    try expect(
-        command == .runBoostMax(
-            durationSeconds: 1,
-            workload: ["worker", "--for", "121m", "--not-a-control-flag"],
-            acknowledgedRisk: true
-        ),
-        "run workload flags after -- should not affect fan-control parsing"
-    )
-}
-
-func testCLIRunRejectsMissingDelimiter() throws {
-    try expectThrows("run should reject missing workload delimiter", {
-        _ = try FanControlCommand.parse([
-            "run", "--boost", "--for", "1s", "--i-understand-active-fan-control", "echo"
-        ])
-    }, matching: { _ in true })
-}
-
-func testCLIRunRejectsEmptyWorkload() throws {
-    try expectThrows("run should reject empty workload", {
-        _ = try FanControlCommand.parse([
-            "run", "--boost", "--for", "1s", "--i-understand-active-fan-control", "--"
-        ])
-    }, matching: { _ in true })
+func testCLIRejectsRunCommand() throws {
+    try expectThrows("run should not be part of the initial active interface", {
+        _ = try FanControlCommand.parse(["run", "--boost", "--for", "1s", "-y", "--", "echo", "hello"])
+    }, matching: { error in
+        error as? FanControlCommandParseError == .unknownArgument("run")
+    })
 }
 
 func testCLIRejectsUnknownDurationUnit() throws {
     try expectThrows("boost should reject unknown duration unit", {
-        _ = try FanControlCommand.parse(["boost", "--for", "1h", "--i-understand-active-fan-control"])
+        _ = try FanControlCommand.parse(["boost", "--for", "1h", "-y"])
     }, matching: { _ in true })
 
     try expectThrows("boost should reject fractional minute duration", {
-        _ = try FanControlCommand.parse(["boost", "--for", "1.5m", "--i-understand-active-fan-control"])
+        _ = try FanControlCommand.parse(["boost", "--for", "1.5m", "-y"])
     }, matching: { _ in true })
 }
 
 func testCLIRejectsZeroDuration() throws {
     try expectThrows("boost should reject zero duration", {
-        _ = try FanControlCommand.parse(["boost", "--for", "0s", "--i-understand-active-fan-control"])
+        _ = try FanControlCommand.parse(["boost", "--for", "0s", "-y"])
     }, matching: { _ in true })
 }
 
 func testCLIRejectsNegativeDuration() throws {
     try expectThrows("boost should reject negative duration", {
-        _ = try FanControlCommand.parse(["boost", "--for", "-1s", "--i-understand-active-fan-control"])
+        _ = try FanControlCommand.parse(["boost", "--for", "-1s", "-y"])
     }, matching: { _ in true })
 }
 
@@ -2252,13 +2171,12 @@ let tests: [(String, () throws -> Void)] = [
     ("SMCControlTransport writes only typed operations from capability", testSMCControlTransportWritesOnlyTypedOperationsFromCapability),
     ("SMCControlTransport SMCKeyData ABI layout", testSMCControlTransportKeyDataABILayout),
     ("Package defines single coldfront executable", testPackageDefinesSingleColdfrontExecutable),
-    ("Coldfront executable routes disabled gate through command contract", testColdfrontExecutableRoutesDisabledGateThroughCommandContract),
-    ("Disabled active-control response fails boost commands", testDisabledActiveControlResponseFailsBoostCommands),
+    ("Coldfront executable no longer routes boost through disabled gate", testColdfrontExecutableNoLongerRoutesBoostThroughDisabledGate),
+    ("Coldfront executable dispatches boost and auto to controller", testColdfrontExecutableDispatchesBoostAndAutoToController),
+    ("Disabled active-control response fails boost command", testActiveControlResponseFailsBoostCommandWhenExplicitlyDisabled),
     ("Disabled status JSON response is parseable", testDisabledStatusJSONResponseIsParseable),
-    ("Coldfront executable disabled boost exits before fan control", testControlExecutableDisabledBoostExitsBeforeFanControl),
-    ("Coldfront executable disabled run does not start workload", testControlExecutableDisabledRunDoesNotStartWorkload),
     ("Coldfront executable status JSON reports disabled flags", testControlExecutableStatusJSONReportsDisabledFlags),
-    ("README documents auto lease inspection only", testReadmeDocumentsAutoLeaseInspectionOnly),
+    ("README documents boost and auto commands", testReadmeDocumentsBoostAndAutoCommands),
     ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
     ("CLI parses status JSON", testCLIParsesStatusJSON),
     ("CLI parses auto", testCLIParsesAuto),
@@ -2267,10 +2185,7 @@ let tests: [(String, () throws -> Void)] = [
     ("CLI uses default boost duration", testCLIUsesDefaultBoostDuration),
     ("CLI rejects missing acknowledgement", testCLIRejectsMissingAcknowledgement),
     ("CLI rejects lease over two hours", testCLIRejectsLeaseOverTwoHours),
-    ("CLI run parses workload and duration", testCLIRunParsesWorkloadAndDuration),
-    ("CLI run ignores workload flags after delimiter", testCLIRunIgnoresWorkloadFlagsAfterDelimiter),
-    ("CLI run rejects missing delimiter", testCLIRunRejectsMissingDelimiter),
-    ("CLI run rejects empty workload", testCLIRunRejectsEmptyWorkload),
+    ("CLI rejects run command", testCLIRejectsRunCommand),
     ("CLI rejects unknown duration unit", testCLIRejectsUnknownDurationUnit),
     ("CLI rejects zero duration", testCLIRejectsZeroDuration),
     ("CLI rejects negative duration", testCLIRejectsNegativeDuration),

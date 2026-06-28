@@ -5,8 +5,8 @@ for Apple Silicon Macs.
 
 The first release focuses on trustworthy telemetry: fan count, current/min/max
 RPM, selected temperature sensors, selected power sensors, and explicit SMC key
-reads with raw bytes for auditability. Active fan control is still gated behind
-short validation flows and recovery safeguards.
+reads with raw bytes for auditability. Active fan control is opt-in and records
+a lease before changing fan state so `auto` can restore Apple's managed control.
 
 The longer-term goal is a native open source thermal assistant for Apple
 Silicon machines: boost fans before local AI inference or other heavy work,
@@ -18,13 +18,14 @@ then restore Apple's automatic fan control.
 - Apple Silicon tested on `Mac16,5` / M4 Max
 - read-only SMC telemetry by default
 - bounded 10-second hardware validation command
-- normal boost and workload execution remain disabled
+- manual max boost and auto restore on validated hardware
+- no workload wrapper yet
 - no background daemon
 - no sudo requirement for telemetry reads
 
-`auto` currently performs lease inspection only; recovery writes remain
-disabled until validation completes. `validate` is the only active write path
-and is limited to 10 seconds.
+`boost` leaves fans at maximum until you run `auto`. There is no background
+daemon yet; if you forget to restore, the failure mode is noisy fans rather than
+silent heat buildup.
 
 ## Build
 
@@ -53,7 +54,19 @@ Check the guarded active-control status:
 Run the bounded validation path:
 
 ```sh
-sudo .build/release/coldfront validate --for 10s --i-understand-active-fan-control
+sudo .build/release/coldfront validate --for 10s -y
+```
+
+Boost fans to maximum:
+
+```sh
+sudo .build/release/coldfront boost --for 10m -y
+```
+
+Restore Apple's automatic fan control:
+
+```sh
+sudo .build/release/coldfront auto
 ```
 
 Example output:
@@ -88,8 +101,8 @@ swift run FanControlCoreTestRunner
 ## Safety Model
 
 Coldfront uses one executable, but telemetry remains the default behavior.
-Active writes are reachable only through explicit control commands with an
-acknowledgement flag.
+Active writes are reachable only through explicit control commands. `boost` and
+`validate` require `-y` or `--yes`.
 
 The C read bridge only supports:
 
@@ -99,16 +112,15 @@ The C read bridge only supports:
 - read SMC key by index
 
 The active write stack uses package-scoped typed operations, not raw public SMC
-writes. Normal `boost` and `run --boost` execution remain disabled until crash
-recovery, parent-death recovery, missed-heartbeat recovery, lease-expiry
-recovery, signal recovery, and sleep/wake recovery are validated on hardware.
+writes. `boost` creates a lease before its first write. `auto` restores from
+that captured lease and clears the lease only after managed mode and targets
+settle.
 
 ## Roadmap
 
 - Improve sensor labeling for Apple Silicon models.
 - Add a compact menu-bar or terminal dashboard.
 - Record bounded local thermal history.
-- Add native max-boost and auto-restore fan control.
 - Add a workload wrapper for local inference and other heavy commands.
 - Keep all active fan-control work opt-in and auditable.
 

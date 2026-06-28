@@ -10,7 +10,7 @@ Build a native Coldfront fan-control module for Apple Silicon Macs.
 Initial active mode is deliberately simple:
 
 ```text
-boost -> run workload -> restore auto
+boost -> restore auto
 ```
 
 No prediction, no fan curves, and no dependency on ThermalForge, TG Pro, Macs
@@ -374,17 +374,21 @@ Target commands:
 
 ```sh
 coldfront status --json
-coldfront boost --for 10m
+coldfront boost --for 10m -y
 coldfront auto
-coldfront run --boost -- <workload command>
 ```
 
-`coldfront run --boost -- <workload>` flow:
+`coldfront boost` flow:
 
 1. Start helper lease.
 2. Verify fans ramp.
-3. Run workload command.
-4. Restore auto in `defer`/`finally`.
+3. Leave fans boosted until explicit `coldfront auto`.
+
+`coldfront auto` flow:
+
+1. Read current lease.
+2. Restore captured automatic state.
+3. Clear lease after managed mode and target settle.
 5. Exit with workload exit code unless restore fails, in which case report both.
 
 ## Tests

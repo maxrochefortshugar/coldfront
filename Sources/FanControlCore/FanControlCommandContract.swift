@@ -16,7 +16,7 @@ public enum FanControlCommandContract {
         capability: FanCapability
     ) throws -> FanControlCommandResponse {
         switch command {
-        case .boostMax, .runBoostMax:
+        case .boostMax:
             return FanControlCommandResponse(
                 stdout: "\(disabledActiveControlMessage(model: capability.model))\n",
                 exitCode: 1

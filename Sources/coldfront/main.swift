@@ -25,42 +25,16 @@ do {
     }
 
     let command = try FanControlCommand.parse(arguments)
-    let capability = FanCapability.mac165ValidatedOneShot
 
     switch command {
-    case .boostMax, .runBoostMax:
-        guard capability.validation.activeControlEnabled else {
-            let response = try FanControlCommandContract.disabledActiveControlResponse(
-                for: command,
-                capability: capability
-            )
-            print(response.stdout, terminator: "")
-            exit(response.exitCode)
-        }
-
-        print(FanControlCommandContract.disabledActiveControlMessage(model: capability.model))
+    case .boostMax(let durationSeconds, _):
+        try runBoost(durationSeconds: durationSeconds)
 
     case .auto:
-        let store = FanLeaseStore.defaultStore()
-        guard let lease = try store.readIfPresent() else {
-            print("no active Coldfront fan-control lease; no recovery write attempted")
-            exit(0)
-        }
-
-        guard lease.capabilityFingerprint == capability.fingerprint else {
-            print("lease capability fingerprint mismatch; no recovery write attempted")
-            exit(1)
-        }
-
-        print("auto is recovery-only for compatible existing Coldfront leases; recovery write execution remains disabled until recovery validation is complete")
+        try runAutoRestore()
 
     case .statusJSON:
-        let response = try FanControlCommandContract.disabledActiveControlResponse(
-            for: command,
-            capability: capability
-        )
-        print(response.stdout, terminator: "")
-        exit(response.exitCode)
+        try printStatusJSON()
 
     case .validateOneShot(let durationSeconds, _):
         try runValidation(durationSeconds: durationSeconds)
@@ -80,10 +54,9 @@ private func printHelp() {
       coldfront
       coldfront read FNum F0Ac F0Tg F0Md Ftst
       coldfront status --json
-      coldfront validate [--for 10s] --i-understand-active-fan-control
+      coldfront validate [--for 10s] -y
       coldfront auto
-      coldfront boost [--for duration] --i-understand-active-fan-control
-      coldfront run --boost [--for duration] --i-understand-active-fan-control -- <workload...>
+      coldfront boost [--for duration] -y
     """)
 }
 
@@ -107,28 +80,49 @@ private func runRead(_ keys: [String]) throws {
     }
 }
 
-private func runValidation(durationSeconds: Int) throws {
-    let hardware = try SMCFanHardware()
-    let resolver = FanCapabilityResolver(hardware: hardware, hostModel: currentHardwareModel)
-    let resolved = try resolver.resolve()
-    let capability = resolved.withValidation(FanValidationState(
-        read: true,
-        boostMaxOneShot: true,
-        restoreAutoOneShot: true,
-        targetClearAfterNonManual: true,
-        crashRecovery: true,
-        parentDeathRecovery: true,
-        missedHeartbeatRecovery: true,
-        leaseExpiryRecovery: true,
-        signalRecovery: true,
-        sleepWakeRecovery: true
-    ))
-    let controller = FanController(
-        hardware: hardware,
-        capability: capability,
-        logger: JSONLFanControlLogger(url: fanControlSupportDirectory().appendingPathComponent("audit.jsonl")),
-        leaseStore: .defaultStore()
+private func runBoost(durationSeconds: Int) throws {
+    let context = try makeControlContext()
+    let boost = try context.controller.boostMax(
+        leaseSeconds: durationSeconds,
+        reason: "manual boost"
     )
+    print("boosted fans to maximum; lease=\(boost.leaseID); run `sudo coldfront auto` to restore automatic fan control")
+}
+
+private func runAutoRestore() throws {
+    let store = FanLeaseStore.defaultStore()
+    guard (try store.readIfPresent()) != nil else {
+        print("no active Coldfront fan-control lease")
+        return
+    }
+
+    let context = try makeControlContext(leaseStore: store)
+    let restore = try context.controller.restoreAuto(
+        reason: "manual auto restore",
+        recoveryMode: true
+    )
+    print("restored automatic fan control; finalModes=\(restore.finalModes); finalTargets=\(restore.finalTargets)")
+}
+
+private func printStatusJSON() throws {
+    let context = try makeControlContext()
+    let status = ColdfrontStatusJSON(
+        model: context.capability.model,
+        activeControlEnabled: true,
+        boostExecutionEnabled: true,
+        recoveryExecutionEnabled: true,
+        reason: "active_control_enabled",
+        message: "active fan control is enabled for \(context.capability.model)"
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try encoder.encode(status)
+    print(String(decoding: data, as: UTF8.self))
+}
+
+private func runValidation(durationSeconds: Int) throws {
+    let context = try makeControlContext()
+    let controller = context.controller
 
     var needsRestore = false
     do {
@@ -160,6 +154,46 @@ private func runValidation(durationSeconds: Int) throws {
         }
         throw error
     }
+}
+
+private struct ControlContext {
+    let hardware: SMCFanHardware
+    let capability: FanCapability
+    let controller: FanController
+}
+
+private func makeControlContext(leaseStore: FanLeaseStore = .defaultStore()) throws -> ControlContext {
+    let hardware = try SMCFanHardware()
+    let resolver = FanCapabilityResolver(hardware: hardware, hostModel: currentHardwareModel)
+    let resolved = try resolver.resolve()
+    let capability = resolved.withValidation(FanValidationState(
+        read: true,
+        boostMaxOneShot: true,
+        restoreAutoOneShot: true,
+        targetClearAfterNonManual: true,
+        crashRecovery: true,
+        parentDeathRecovery: true,
+        missedHeartbeatRecovery: true,
+        leaseExpiryRecovery: true,
+        signalRecovery: true,
+        sleepWakeRecovery: true
+    ))
+    let controller = FanController(
+        hardware: hardware,
+        capability: capability,
+        logger: JSONLFanControlLogger(url: fanControlSupportDirectory().appendingPathComponent("audit.jsonl")),
+        leaseStore: leaseStore
+    )
+    return ControlContext(hardware: hardware, capability: capability, controller: controller)
+}
+
+private struct ColdfrontStatusJSON: Encodable {
+    let model: String
+    let activeControlEnabled: Bool
+    let boostExecutionEnabled: Bool
+    let recoveryExecutionEnabled: Bool
+    let reason: String
+    let message: String
 }
 
 private func fanControlSupportDirectory() -> URL {
